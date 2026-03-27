@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>食料品管理</title>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#f0f7f0;font-family:'Hiragino Sans','Meiryo',sans-serif;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const {useState,useRef,useEffect,useCallback} = React;
+
+const PROJECT_ID="grocery-management-b4dc4";
+const BASE_URL="https://firestore.googleapis.com/v1/projects/"+PROJECT_ID+"/databases/(default)/documents";
+const toFS=(obj)=>{const fields={};for(const[k,v]of Object.entries(obj)){if(v===undefined||v===null)fields[k]={nullValue:null};else if(typeof v==="boolean")fields[k]={booleanValue:v};else if(typeof v==="number"){if(Number.isInteger(v))fields[k]={integerValue:String(v)};else fields[k]={doubleValue:v};}else fields[k]={stringValue:String(v)};}return{fields};};
+const fromFS=(doc)=>{const id=doc.name.split("/").pop();const obj={id};for(const[k,v]of Object.entries(doc.fields||{})){if(v.stringValue!==undefined)obj[k]=v.stringValue;else if(v.integerValue!==undefined)obj[k]=Number(v.integerValue);else if(v.doubleValue!==undefined)obj[k]=Number(v.doubleValue);else if(v.booleanValue!==undefined)obj[k]=v.booleanValue;else obj[k]=null;}return obj;};
+const hdr={"Content-Type":"application/json"};
+const fsGet=async(col)=>{const r=await fetch(BASE_URL+"/"+col,{headers:hdr});const d=await r.json();return(d.documents||[]).map(fromFS);};
+const fsAdd=async(col,data)=>{const r=await fetch(BASE_URL+"/"+col,{method:"POST",headers:hdr,body:JSON.stringify(toFS(data))});return fromFS(await r.json());};
+const fsSet=async(col,id,data)=>{const mask=Object.keys(data).map(k=>"updateMask.fieldPaths="+encodeURIComponent(k)).join("&");await fetch(BASE_URL+"/"+col+"/"+id+"?"+mask,{method:"PATCH",headers:hdr,body:JSON.stringify(toFS(data))});};
+const fsDel=async(col,id)=>{await fetch(BASE_URL+"/"+col+"/"+id,{method:"DELETE",headers:hdr});};
+const fsGetDoc=async(col,id)=>{const r=await fetch(BASE_URL+"/"+col+"/"+id,{headers:hdr});if(!r.ok)return null;const d=await r.json();return d.fields?fromFS(d):null;};
+const fsSetDoc=async(col,id,data)=>{await fetch(BASE_URL+"/"+col+"/"+id,{method:"PATCH",headers:hdr,body:JSON.stringify(toFS(data))});};
+
+const LOCATIONS=["冷蔵室","野菜室","冷凍庫","備蓄"];
+const DEFAULT_TABS=["メモ","在庫一覧","冷蔵庫","備蓄","賞味期限","買い物"];
+const SHOP_NAMES=["買い物","買い物リスト"];
+const migrateTabOrder=(arr)=>{
+  if(!Array.isArray(arr))return[...DEFAULT_TABS];
+  const m=arr.map(t=>t==="買い物リスト"?"買い物":t);
+  DEFAULT_TABS.forEach(t=>{if(!m.includes(t))m.push(t);});
+  return m;
+};
+const CATEGORY_DETAILS={
+  "牛乳":["おいしい牛乳","明治おいしい牛乳","低脂肪牛乳","無調整牛乳","成分調整牛乳","有機牛乳","低温殺菌牛乳","スキムミルク","北海道牛乳","カルシウム強化牛乳","豆乳","アーモンドミルク"],
+  "肉類":["鶏もも肉","鶏むね肉","鶏ひき肉","手羽元","手羽先","豚こま切れ","豚バラ肉","豚ロース肉","豚ひき肉","豚肩ロース","牛こま切れ","牛バラ肉","牛ロース肉","合いびき肉","ラム肉"],
+  "魚類":["サーモン","マグロ","アジ","サバ","イワシ","サンマ","タイ","ブリ","カレイ","タラ","エビ","イカ","タコ","ホタテ","アサリ"],
+  "野菜":["キャベツ","玉ねぎ","にんじん","大根","ほうれん草","ピーマン","ブロッコリー","なす","きゅうり","もやし","小松菜","ねぎ","じゃがいも","トマト","レタス"],
+  "果物":["りんご","バナナ","みかん","ぶどう","いちご","もも","なし","キウイ","スイカ","メロン","パイナップル","マンゴー","柿","アボカド","レモン"],
+  "卵":["Mサイズ卵 10個","Lサイズ卵 10個","Mサイズ卵 6個","Lサイズ卵 6個","有機卵","ブランド卵","温泉卵","うずらの卵"],
+  "乳製品":["ヨーグルト","プレーンヨーグルト","スライスチーズ","クリームチーズ","バター","生クリーム","モッツァレラチーズ","カマンベールチーズ","ゴーダチーズ","コテージチーズ","サワークリーム","シュレッドチーズ"],
+  "飲み物":["緑茶","麦茶","コーヒー","オレンジジュース","リンゴジュース","コーラ","炭酸水","スポーツドリンク","ミネラルウォーター","野菜ジュース","ビール","ワイン"],
+  "調味料":["醤油","みりん","料理酒","お酢","味噌","塩","砂糖","ケチャップ","マヨネーズ","オリーブオイル","ごま油","サラダ油","めんつゆ","カレールウ","コンソメ"],
+  "冷凍食品":["冷凍うどん","冷凍ラーメン","冷凍餃子","冷凍唐揚げ","冷凍コロッケ","冷凍シュウマイ","冷凍枝豆","冷凍ブロッコリー","冷凍ピザ","冷凍チャーハン","冷凍グラタン","冷凍春巻き"],
+  "パン・穀物":["食パン","バゲット","ロールパン","クロワッサン","白米","玄米","パスタ","スパゲッティ","そば","うどん","中華麺","コーンフレーク"],
+  "お菓子":["ポテトチップス","チョコレート","クッキー","せんべい","グミ","キャラメル","アイスクリーム","プリン","ゼリー","ビスケット","チップス","飴"],
+  "缶詰":["ツナ缶","サバ缶","サンマ缶","コーン缶","トマト缶","ミカン缶","桃缶","豆缶","スープ缶","カニ缶","オイルサーディン","ホタテ缶"],
+  "インスタント":["カップラーメン","カップうどん","カップそば","袋ラーメン","レトルトカレー","レトルトごはん","インスタント味噌汁","インスタントスープ","パスタソース","レトルト丼の素","お茶漬けの素","フリーズドライ味噌汁"],
+  "その他":["豆腐","納豆","油揚げ","こんにゃく","しらたき","ナッツ","はちみつ","ジャム","パン粉","片栗粉","小麦粉","ごま"]
+};
+const CATEGORIES=Object.keys(CATEGORY_DETAILS);
+const VERSION="ver1.30";
+const genId=()=>Math.random().toString(36).slice(2,9);
+const todayStr=()=>new Date().toISOString().slice(0,10);
+const nowTs=()=>new Date().toISOString();
+const addDays=(d,n)=>{const dt=new Date(d);dt.setDate(dt.getDate()+n);return dt.toISOString().slice(0,10);};
+const withinDays=(exp)=>exp&&exp>=todayStr()&&exp<=addDays(todayStr(),5);
+const isExpired=(exp)=>exp&&exp<todayStr();
+const hasKanji=(str)=>/[\u4E00-\u9FFF\u3400-\u4DBF]/.test(str||"");
+const tsToDate=(ts)=>{if(!ts)return"";try{return ts.slice(0,10);}catch{return"";}};
+const DEFAULT_EXPIRY_RULES=[
+  {id:genId(),name:"牛乳",days:7},{id:genId(),name:"豆腐",days:5},{id:genId(),name:"もやし",days:3},
+  {id:genId(),name:"肉類",days:3},{id:genId(),name:"魚類",days:2},{id:genId(),name:"ブロッコリー",days:5},
+  {id:genId(),name:"小松菜",days:4},{id:genId(),name:"ほうれん草",days:4},{id:genId(),name:"春菊",days:4},
+  {id:genId(),name:"鶏",days:3},{id:genId(),name:"豚",days:3},{id:genId(),name:"牛",days:3},
+  {id:genId(),name:"合いびき",days:2},{id:genId(),name:"納豆",days:7},{id:genId(),name:"ヨーグルト",days:14},
+];
+const autoExpiry=(name,rules)=>{if(!name)return null;const m=rules.find(r=>name.includes(r.name));if(!m)return null;return{expiry:addDays(todayStr(),m.days),ruleName:m.name};};
+const toKana=(str)=>(str||"").replace(/[\u3041-\u3096]/g,ch=>String.fromCharCode(ch.charCodeAt(0)+0x60)).toLowerCase();
+const matchSearch=(target,query)=>{if(!query)return true;return toKana(target).includes(toKana(query));};
+const getDayLogFS=async(key)=>{try{const d=await fsGetDoc("settings","logs");if(!d||!d[key])return[];return JSON.parse(d[key]);}catch{return[];}};
+const addDayLogFS=async(key)=>{try{const d=await fsGetDoc("settings","logs")||{};const cur=d[key]?JSON.parse(d[key]):[];await fsSetDoc("settings","logs",{...d,[key]:JSON.stringify([...cur,todayStr()])});}catch{}};
+const BUG_KEY="bugReportLog";const SUG_KEY="suggestLog";
+
+const iSt={width:"100%",padding:"10px 12px",border:"1px solid #ddd",borderRadius:8,fontSize:15,boxSizing:"border-box",outline:"none"};
+const bSm={padding:"8px 11px",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:"bold",lineHeight:1};
+const cardBorderColor=(exp)=>isExpired(exp)?"#b71c1c":withinDays(exp)?"#f44336":"#4CAF50";
+
+// ★ NumberInput: 小数点入力で値を置き換え
+function NumberInput({value,onChange,min=0,max=999,label}){
+  const isDecimal=typeof value==="number"&&!Number.isInteger(value);
+  const[free,setFree]=useState(()=>isDecimal||value>30);
+  const[strVal,setStrVal]=useState(()=>String(value));
+  const decOpts=[];for(let i=1;i<=100;i++)decOpts.push(Math.round(i*0.1*10)/10);
+  const intOpts=Array.from({length:31},(_,i)=>i);
+  const enterFree=()=>{setFree(true);setStrVal(String(value));};
+  const exitFree=()=>{setFree(false);if(typeof value==="number"&&(value>30||!Number.isInteger(value)))onChange(0);};
+  const handleStrChange=e=>{const raw=e.target.value;setStrVal(raw);const n=parseFloat(raw);if(!isNaN(n)&&n>=min&&n<=max)onChange(n);};
+  const handleStrBlur=()=>{const n=parseFloat(strVal);if(isNaN(n)||n<min){setStrVal(String(min));onChange(min);}else if(n>max){setStrVal(String(max));onChange(max);}else{const f=Math.round(n*10)/10;setStrVal(String(f));onChange(f);}};
+  useEffect(()=>{setStrVal(String(value));},[value]);
+  return(
+    <div>
+      {label&&<label style={{fontSize:13,color:"#666",display:"block",marginBottom:4}}>{label}</label>}
+      <div style={{display:"flex",gap:0,alignItems:"stretch",borderRadius:8,overflow:"hidden",border:"1px solid #ddd"}}>
+        <div style={{flex:1,borderRight:"1px solid #ddd"}}>
+          {!free
+            ?<select value={Number.isInteger(value)&&value>=0&&value<=30?value:"__free"}
+                onChange={e=>{if(e.target.value==="__free")enterFree();else onChange(Number(e.target.value));}}
+                style={{...iSt,border:"none",borderRadius:0,width:"100%",height:"100%"}}>
+              <option value="__free">自由入力...</option>
+              {intOpts.map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+            :<div style={{display:"flex",height:"100%"}}>
+              <input type="text" inputMode="decimal" value={strVal} onChange={handleStrChange} onBlur={handleStrBlur}
+                style={{...iSt,border:"none",borderRadius:0,flex:1,minWidth:0}}/>
+              <button onClick={exitFree} style={{...bSm,background:"#f5f5f5",color:"#555",fontSize:11,padding:"0 8px",borderRadius:0,borderLeft:"1px solid #ddd",whiteSpace:"nowrap"}}>戻す</button>
+            </div>
+          }
+        </div>
+        <div style={{flex:1}}>
+          {/* ★ 小数点入力: 値を置き換え */}
+          <select value="" onChange={e=>{
+            const dec=parseFloat(e.target.value);if(isNaN(dec))return;
+            onChange(dec);setStrVal(String(dec));if(!free)setFree(true);
+          }} style={{...iSt,border:"none",borderRadius:0,width:"100%",height:"100%",color:"#2e7d32",background:"#f1f8e9",fontSize:13}}>
+            <option value="">小数点入力</option>
+            {decOpts.map(d=><option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TrashIcon=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>;
+const EditIcon=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
+const CartIcon=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>;
+const DragHandle=()=><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#bbb" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>;
+const HomeIcon=()=><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>;
+const SortIcon=()=><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="9" y2="18"/></svg>;
+
+function SortControl({sortKey,sortDir,onChange}){
+  const opts=[
+    {k:"none",label:"並び替えなし"},
+    {k:"name_asc",label:"あいうえお順 ↑"},{k:"name_desc",label:"あいうえお順 ↓"},
+    {k:"qty_asc",label:"個数 少ない順 ↑"},{k:"qty_desc",label:"個数 多い順 ↓"},
+    {k:"date_asc",label:"登録日 古い順 ↑"},{k:"date_desc",label:"登録日 新しい順 ↓"},
+    {k:"expiry_asc",label:"賞味期限 近い順 ↑"},{k:"expiry_desc",label:"賞味期限 遠い順 ↓"},
+    {k:"memo_asc",label:"メモあり優先"},
+  ];
+  const[open,setOpen]=useState(false);const ref=useRef();
+  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  const parseKey=(k)=>{if(k==="none")return["none",""];const pts=k.split("_");const d=pts.pop();return[pts.join("_"),d];};
+  const curOpt=opts.find(o=>{if(o.k==="none")return sortKey==="none";const[k,d]=parseKey(o.k);return sortKey===k&&sortDir===d;});
+  return(
+    <div ref={ref} style={{position:"relative"}}>
+      <button onClick={()=>setOpen(o=>!o)} style={{...bSm,background:"#fff",color:"#555",border:"1px solid #ddd",display:"flex",alignItems:"center",gap:4,padding:"7px 12px"}}><SortIcon/>{curOpt?curOpt.label:"並び替え"}</button>
+      {open&&<div style={{position:"absolute",top:"110%",right:0,background:"#fff",borderRadius:10,boxShadow:"0 4px 16px rgba(0,0,0,0.15)",zIndex:300,whiteSpace:"nowrap",overflow:"hidden",minWidth:220}}>
+        {opts.map(o=>{const[k,d]=parseKey(o.k);const active=sortKey===k&&(k==="none"||sortDir===d);return<button key={o.k} onClick={()=>{onChange(k,d);setOpen(false);}} style={{display:"block",width:"100%",padding:"12px 16px",background:active?"#e8f5e9":"#fff",border:"none",borderBottom:"1px solid #f0f0f0",cursor:"pointer",fontSize:12,textAlign:"left",color:active?"#2e7d32":"#222",fontWeight:active?"bold":"normal"}}>{o.label}</button>;})}
+      </div>}
+    </div>
+  );
+}
+
+function applySortItems(arr,sk,sd){
+  if(sk==="none")return arr;
+  return[...arr].sort((a,b)=>{
+    if(sk==="name"){const r=a.name.localeCompare(b.name,"ja");return sd==="asc"?r:-r;}
+    if(sk==="qty")return sd==="asc"?a.qty-b.qty:b.qty-a.qty;
+    if(sk==="date"){const da=a.createdAt||"",db=b.createdAt||"";return sd==="asc"?da.localeCompare(db):db.localeCompare(da);}
+    if(sk==="expiry"){const ea=a.expiry||"",eb=b.expiry||"";if(!ea&&!eb)return 0;if(!ea)return 1;if(!eb)return -1;return sd==="asc"?ea.localeCompare(eb):eb.localeCompare(ea);}
+    if(sk==="memo")return(b.note?1:0)-(a.note?1:0);
+    return 0;
+  });
+}
+function applySortGrouped(arr,sk,sd){
+  if(sk==="none")return arr;
+  return[...arr].sort((a,b)=>{
+    if(sk==="name"){const r=a.name.localeCompare(b.name,"ja");return sd==="asc"?r:-r;}
+    if(sk==="qty"){const qa=Object.values(a.locs).reduce((s,v)=>s+v,0),qb=Object.values(b.locs).reduce((s,v)=>s+v,0);return sd==="asc"?qa-qb:qb-qa;}
+    if(sk==="date"){const da=a.createdAt||"",db=b.createdAt||"";return sd==="asc"?da.localeCompare(db):db.localeCompare(da);}
+    if(sk==="expiry"){const ea=a.expiry||"",eb=b.expiry||"";if(!ea&&!eb)return 0;if(!ea)return 1;if(!eb)return -1;return sd==="asc"?ea.localeCompare(eb):eb.localeCompare(ea);}
+    if(sk==="memo")return(b.note?1:0)-(a.note?1:0);
+    return 0;
+  });
+}
+
+function DraggableList({items,renderItem,onReorder,keyFn}){
+  const[drag,setDrag]=useState(null);const[over,setOver]=useState(null);
+  const end=()=>{if(drag!==null&&over!==null&&drag!==over){const a=[...items];const[x]=a.splice(drag,1);a.splice(over,0,x);onReorder(a);}setDrag(null);setOver(null);};
+  return<div>{items.map((item,i)=><div key={keyFn(item,i)} draggable onDragStart={()=>setDrag(i)} onDragEnter={()=>setOver(i)} onDragEnd={end} onDragOver={e=>e.preventDefault()} style={{opacity:over===i&&drag!==i?0.5:1,transition:"opacity .15s"}}>{renderItem(item,i)}</div>)}</div>;
+}
+
+function CalendarPicker({value,onChange,onClose}){
+  const[view,setView]=useState(()=>{const d=value?new Date(value):new Date();return{year:d.getFullYear(),month:d.getMonth()};});
+  const{year,month}=view;const first=new Date(year,month,1).getDay(),days=new Date(year,month+1,0).getDate();
+  const cells=[];for(let i=0;i<first;i++)cells.push(null);for(let d=1;d<=days;d++)cells.push(d);
+  const mn=["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+  const pick=d=>{onChange(year+"-"+String(month+1).padStart(2,"0")+"-"+String(d).padStart(2,"0"));onClose();};
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{e.stopPropagation();onClose();}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,minWidth:300,boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+          <button style={{...bSm,padding:"8px 14px"}} onClick={()=>setView(v=>({year:v.month===0?v.year-1:v.year,month:v.month===0?11:v.month-1}))}>‹</button>
+          <b>{year}年 {mn[month]}</b>
+          <button style={{...bSm,padding:"8px 14px"}} onClick={()=>setView(v=>({year:v.month===11?v.year+1:v.year,month:v.month===11?0:v.month+1}))}>›</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,textAlign:"center"}}>
+          {["日","月","火","水","木","金","土"].map(d=><div key={d} style={{fontSize:12,color:"#888",fontWeight:"bold",padding:"4px 0"}}>{d}</div>)}
+          {cells.map((d,i)=>{const s=d?year+"-"+String(month+1).padStart(2,"0")+"-"+String(d).padStart(2,"0"):"";const sel=d&&value===s;return<div key={i} onClick={d?()=>pick(d):undefined} style={{padding:"8px 0",borderRadius:8,cursor:d?"pointer":"default",background:sel?"#4CAF50":"transparent",color:sel?"#fff":"#333",fontWeight:"bold",fontSize:14}}>{d||""}</div>;})}
+        </div>
+        <button onClick={onClose} style={{marginTop:12,width:"100%",padding:"10px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:14}}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
+function QtyAddModal({item,onUpdateDate,onNewEntry,onCancel}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2100,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,width:320,boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+        <h4 style={{margin:"0 0 10px",color:"#2e7d32",fontSize:15}}>購入日を更新しますか？</h4>
+        <div style={{fontSize:13,color:"#555",marginBottom:16}}>「{item.name}」の購入日が設定されています。</div>
+        <button onClick={onUpdateDate} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を更新して個数を増やす</button>
+        <button onClick={onNewEntry} style={{width:"100%",padding:"13px",background:"#1976d2",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を別にして新規登録する</button>
+        <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル</button>
+      </div>
+    </div>
+  );
+}
+
+function QtyZeroModal({itemName,onYes,onNo}){
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2150,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,width:320,boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+        <h4 style={{margin:"0 0 10px",color:"#e65100",fontSize:15}}>個数が0になりました</h4>
+        <div style={{fontSize:14,color:"#555",marginBottom:20}}>「{itemName}」を買い物に追加しますか？</div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={onYes} style={{flex:1,padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>はい</button>
+          <button onClick={onNo} style={{flex:1,padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>いいえ</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShopReflectModal({doneItems,onOverwrite,onOverwriteNew,onNewAll,onCancel}){
+  const[page,setPage]=useState("top");
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2200,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,width:340,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+        <h4 style={{margin:"0 0 10px",color:"#2e7d32"}}>🛒 完了済みを在庫に反映</h4>
+        <div style={{background:"#f5f5f5",borderRadius:8,padding:10,marginBottom:10,fontSize:13,color:"#555"}}>{doneItems.filter(s=>s.name).map(s=><div key={s.id} style={{padding:"2px 0"}}>・{s.name} × {s.qty||1}</div>)}</div>
+        {page==="top"&&<>
+          <div style={{background:"#fff8e1",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12,color:"#795548",lineHeight:1.6}}>⚠️ 登録場所が複数・冷蔵室以外・新規の場合は<b>冷蔵室</b>に登録されます。</div>
+          <button onClick={()=>setPage("overwrite")} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,textAlign:"left",fontSize:14}}>✅ 以前の登録場所で上書き<div style={{fontSize:12,fontWeight:"normal",marginTop:3,opacity:0.85}}>同名1件・賞味期限なしは個数加算。それ以外は冷蔵室に新規追加</div></button>
+          <button onClick={onNewAll} style={{width:"100%",padding:"13px",background:"#1976d2",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,textAlign:"left",fontSize:14}}>➕ 全て新規で登録（冷蔵室）</button>
+          <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル（反映せず削除）</button>
+        </>}
+        {page==="overwrite"&&<>
+          <div style={{fontSize:14,color:"#333",marginBottom:14,fontWeight:"bold"}}>在庫があるものは購入日を更新しますか？</div>
+          <button onClick={onOverwrite} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を更新して個数を増やす</button>
+          <button onClick={onOverwriteNew} style={{width:"100%",padding:"13px",background:"#1976d2",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を別にして登録する</button>
+          <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル（反映せず削除）</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ★ ItemForm: 新規・編集どちらも購入日フォーム表示。「未設定=今日」文言・動作なし
+function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocation,expiryRules,onGoHome,onAddToShop}){
+  const allLoc=[...LOCATIONS,...(extraLocations||[]).filter(l=>!LOCATIONS.includes(l)&&!SHOP_NAMES.includes(l))];
+  const initForm=()=>{
+    if(initial){
+      const loc=SHOP_NAMES.includes(initial.location)?"冷蔵室":initial.location;
+      // 編集時: 既存の購入日をYYYY-MM-DDで初期表示
+      const purchaseDate=tsToDate(initial.createdAt)||"";
+      return{...initial,location:loc,purchaseDate};
+    }
+    const defLoc=(prefill&&prefill.location&&!SHOP_NAMES.includes(prefill.location))?prefill.location:(defaultLocation||"冷蔵室");
+    return{name:(prefill&&prefill.name)||"",detail:"",category:(prefill&&prefill.category)||"",qty:1,location:defLoc,expiry:(prefill&&prefill.expiry)||"",note:"",yomi:"",purchaseDate:""};
+  };
+  const[form,setForm]=useState(initForm);
+  const[showCal,setShowCal]=useState(false);
+  const[showPurchaseCal,setShowPurchaseCal]=useState(false);
+  const[autoMsg,setAutoMsg]=useState("");
+  const[expiryManuallyCleared,setExpiryManuallyCleared]=useState(false);
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const showYomiWarn=hasKanji(form.name)&&!(form.yomi||"").trim();
+  const applyAE=(name)=>{if(!name){setAutoMsg("");return null;}const res=autoExpiry(name,expiryRules||[]);if(res){setAutoMsg("「"+res.ruleName+"」ルールと一致しました。");return res.expiry;}setAutoMsg("");return null;};
+  const clearExpiry=()=>{set("expiry","");setAutoMsg("");setExpiryManuallyCleared(true);};
+  const onCatChange=(cat)=>{setExpiryManuallyCleared(false);const ae=applyAE(cat||"");setForm(f=>({...f,category:cat,name:cat||"",detail:"",expiry:ae||""}));};
+  const onDetailChange=(val)=>{setExpiryManuallyCleared(false);const newName=val||form.category||"";const ae=applyAE(newName);setForm(f=>({...f,detail:val,name:newName,expiry:ae!=null?ae:f.expiry}));};
+  const onNameChange=(v)=>{setExpiryManuallyCleared(false);const ae=applyAE(v);setForm(f=>({...f,name:v,expiry:ae!=null?ae:f.expiry}));};
+  const detOpts=form.category?(CATEGORY_DETAILS[form.category]||[]):[];
+  const handleSave=()=>{if(!form.name||!form.name.trim()){alert("商品名を入力してください");return;}onSave([{...form,id:form.id||genId(),_expiryCleared:expiryManuallyCleared}]);};
+  const iconBtn={width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0};
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,width:340,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <h3 style={{margin:0,color:"#2e7d32"}}>{isNew?"新規登録":"編集"}</h3>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={()=>{if(!form.name)return;if(onAddToShop)onAddToShop(form.name);}} title="買い物に追加" style={{...iconBtn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button>
+            {onGoHome&&<button onClick={onGoHome} style={{...bSm,background:"#e8f5e9",color:"#2e7d32",display:"flex",alignItems:"center",gap:4,padding:"8px 12px"}}><HomeIcon/> ホーム</button>}
+          </div>
+        </div>
+        {autoMsg&&!expiryManuallyCleared&&<div style={{background:"#e8f5e9",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#2e7d32"}}>🕐 {autoMsg}</div>}
+        <div style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>種類</label><select value={form.category} onChange={e=>onCatChange(e.target.value)} style={iSt}><option value="">選択してください（任意）</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+        <div style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>詳細</label>{detOpts.length>0?<select value={form.detail} onChange={e=>onDetailChange(e.target.value)} style={iSt}><option value="">選択または直接入力</option>{detOpts.map(d=><option key={d} value={d}>{d}</option>)}</select>:<input value={form.detail} onChange={e=>onDetailChange(e.target.value)} placeholder="自由入力" style={iSt}/>}</div>
+        <div style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>商品</label><input value={form.name} onChange={e=>onNameChange(e.target.value)} placeholder="商品名を入力" style={iSt}/></div>
+        <div style={{marginBottom:10}}><NumberInput value={form.qty} onChange={v=>set("qty",v)} min={0} max={999} label="個数"/></div>
+        <div style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>保存場所</label><select value={form.location} onChange={e=>set("location",e.target.value)} style={iSt}>{allLoc.map(l=><option key={l} value={l}>{l}</option>)}</select></div>
+        <div style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>賞味期限</label>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}><input value={form.expiry} readOnly placeholder="タップして選択" onClick={()=>setShowCal(true)} style={{...iSt,cursor:"pointer",flex:1}}/>{form.expiry&&<button onClick={clearExpiry} style={{...bSm,background:"#ffebee",color:"#c62828",fontSize:14,padding:"8px 10px"}}>✕</button>}</div>
+          {expiryManuallyCleared&&<div style={{fontSize:11,color:"#e65100",marginTop:4}}>※ 賞味期限なしで保存します</div>}
+        </div>
+        {/* ★ 購入日: 新規・編集どちらも表示。プレースホルダーから「未設定=今日」を削除 */}
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
+            <label style={{fontSize:13,color:"#666",whiteSpace:"nowrap"}}>購入日</label>
+            <span style={{fontSize:11,color:"#aaa"}}>変更する場合に設定してください</span>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <input value={form.purchaseDate||""} readOnly placeholder="タップして選択" onClick={()=>setShowPurchaseCal(true)} style={{...iSt,cursor:"pointer",flex:1,fontSize:13}}/>
+            {form.purchaseDate&&<button onClick={()=>set("purchaseDate","")} style={{...bSm,background:"#ffebee",color:"#c62828",fontSize:14,padding:"8px 10px"}}>✕</button>}
+          </div>
+        </div>
+        <div style={{marginBottom:14}}><label style={{fontSize:13,color:"#666"}}>メモ</label><input value={form.note} onChange={e=>set("note",e.target.value)} style={iSt}/></div>
+        <div style={{marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
+            <label style={{fontSize:13,color:"#666",whiteSpace:"nowrap"}}>よみがな</label>
+            <span style={{fontSize:11,color:"#aaa"}}>漢字で登録する場合は入力してください</span>
+          </div>
+          {showYomiWarn&&<div style={{background:"#fff3e0",borderRadius:6,padding:"6px 10px",marginBottom:6,fontSize:12,color:"#e65100"}}>⚠️ 検索範囲に漢字を含む場合はよみがなを入力してください。</div>}
+          <input value={form.yomi||""} onChange={e=>set("yomi",e.target.value)} placeholder="例: とうふ、なっとう" style={{...iSt,borderColor:showYomiWarn?"#ffb74d":"#ddd"}}/>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={handleSave} style={{flex:1,padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>保存</button>
+          <button onClick={onCancel} style={{flex:1,padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:15}}>キャンセル</button>
+        </div>
+      </div>
+      {showCal&&<CalendarPicker value={form.expiry} onChange={v=>{set("expiry",v);setExpiryManuallyCleared(false);}} onClose={()=>setShowCal(false)}/>}
+      {showPurchaseCal&&<CalendarPicker value={form.purchaseDate||""} onChange={v=>set("purchaseDate",v)} onClose={()=>setShowPurchaseCal(false)}/>}
+    </div>
+  );
+}
+
+function ReadingMenuButton({onBarcode,onReceipt}){
+  const[open,setOpen]=useState(false);const ref=useRef();
+  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  return<div ref={ref} style={{position:"relative"}}>
+    <button onClick={()=>setOpen(o=>!o)} style={{...bSm,background:"rgba(255,255,255,0.2)",color:"#fff",whiteSpace:"nowrap",padding:"8px 9px"}}>📷 読み取り</button>
+    {open&&<div style={{position:"absolute",top:"110%",right:0,background:"#fff",borderRadius:10,boxShadow:"0 4px 16px rgba(0,0,0,0.18)",zIndex:400,whiteSpace:"nowrap",overflow:"hidden"}}>
+      <button onClick={()=>{onBarcode();setOpen(false);}} style={{display:"block",width:"100%",padding:"13px 20px",background:"#fff",border:"none",borderBottom:"1px solid #f0f0f0",cursor:"pointer",fontSize:14,textAlign:"left",color:"#222"}}>📦 バーコード読み取り</button>
+      <button onClick={()=>{onReceipt();setOpen(false);}} style={{display:"block",width:"100%",padding:"13px 20px",background:"#fff",border:"none",cursor:"pointer",fontSize:14,textAlign:"left",color:"#222"}}>🧾 レシート読み取り</button>
+    </div>}
+  </div>;
+}
+
+function BarcodeModal({onClose,onFound}){
+  const[bc,setBc]=useState("");const[loading,setLoading]=useState(false);const[result,setResult]=useState(null);const[err,setErr]=useState("");
+  const[cameraActive,setCameraActive]=useState(false);const[cameraErr,setCameraErr]=useState("");
+  const videoRef=useRef();const streamRef=useRef(null);const scanRef=useRef(null);const inputRef=useRef();
+  useEffect(()=>{setTimeout(()=>inputRef.current&&inputRef.current.focus(),100);return()=>stopCamera();},[]);
+  const stopCamera=()=>{if(scanRef.current){clearInterval(scanRef.current);scanRef.current=null;}if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}setCameraActive(false);};
+  const startCamera=async()=>{setCameraErr("");setErr("");setResult(null);try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}}});streamRef.current=stream;setCameraActive(true);setTimeout(async()=>{if(videoRef.current){videoRef.current.srcObject=stream;try{await videoRef.current.play();}catch{}}if(window.BarcodeDetector){const detector=new window.BarcodeDetector({formats:["ean_13","ean_8","upc_a","upc_e","code_128","code_39","qr_code"]});scanRef.current=setInterval(async()=>{if(!videoRef.current)return;try{const b=await detector.detect(videoRef.current);if(b.length>0){const val=b[0].rawValue;stopCamera();setBc(val);await doLookup(val);}}catch{}},400);}else{setCameraErr("このブラウザはバーコード自動検出に対応していません。");}},200);}catch{setCameraErr("カメラを起動できませんでした。");setCameraActive(false);}};
+  const doLookup=async(code)=>{const val=(code||bc).trim();if(!val)return;setLoading(true);setErr("");setResult(null);const gc=(name)=>{const l=(name||"").toLowerCase();if(l.includes("milk")||l.includes("牛乳"))return"牛乳";if(l.includes("beef")||l.includes("pork")||l.includes("chicken")||l.includes("meat"))return"肉類";if(l.includes("fish")||l.includes("salmon")||l.includes("tuna"))return"魚類";if(l.includes("egg"))return"卵";if(l.includes("yogurt")||l.includes("cheese")||l.includes("butter"))return"乳製品";if(l.includes("juice")||l.includes("cola")||l.includes("coffee")||l.includes("tea")||l.includes("beer")||l.includes("water"))return"飲み物";if(l.includes("frozen"))return"冷凍食品";if(l.includes("bread")||l.includes("rice")||l.includes("pasta"))return"パン・穀物";if(l.includes("chip")||l.includes("chocolate")||l.includes("candy")||l.includes("cookie"))return"お菓子";if(l.includes("sauce")||l.includes("oil")||l.includes("salt")||l.includes("sugar"))return"調味料";return"その他";};
+    try{const r1=await fetch("https://world.openfoodfacts.org/api/v0/product/"+val+".json");const d1=await r1.json();if(d1.status===1&&d1.product){const p=d1.product;const name=p.product_name_ja||p.product_name||p.product_name_en||"";if(name){setResult({name,category:gc(name)});setLoading(false);return;}}}catch{}
+    try{const r2=await fetch("https://api.upcitemdb.com/prod/trial/lookup?upc="+val);const d2=await r2.json();if(d2.items&&d2.items.length>0){const name=d2.items[0].title||"";setResult({name,category:gc(name)});setLoading(false);return;}}catch{}
+    setErr("このバーコードはデータベースに登録されていませんでした。");setResult({name:"",category:""});setLoading(false);};
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:"#fff",borderRadius:16,padding:24,width:340,maxHeight:"88vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+    <h3 style={{margin:"0 0 14px",color:"#2e7d32"}}>📦 バーコード読み取り</h3>
+    {cameraActive&&<div style={{marginBottom:12}}><video ref={videoRef} style={{width:"100%",borderRadius:10,background:"#000",maxHeight:220,objectFit:"cover",display:"block"}} muted playsInline/>{cameraErr?<div style={{background:"#fff3e0",borderRadius:8,padding:10,marginTop:8,fontSize:13,color:"#e65100"}}>{cameraErr}</div>:<div style={{textAlign:"center",fontSize:13,color:"#2e7d32",marginTop:6,fontWeight:"bold"}}>📷 バーコードをカメラに向けてください</div>}<button onClick={stopCamera} style={{width:"100%",padding:"10px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",marginTop:8,fontSize:14,fontWeight:"bold"}}>カメラを閉じる</button></div>}
+    {!cameraActive&&<button onClick={startCamera} style={{width:"100%",padding:"13px",background:"#e8f5e9",border:"2px solid #4CAF50",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:14,color:"#2e7d32",fontSize:14}}>📷 カメラでバーコードを読み取る</button>}
+    <div style={{background:"#f5f5f5",borderRadius:8,padding:8,marginBottom:10,fontSize:12,color:"#777",textAlign:"center"}}>または番号を手入力して検索</div>
+    <div style={{display:"flex",gap:8,marginBottom:12}}><input ref={inputRef} value={bc} onChange={e=>setBc(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLookup()} placeholder="例: 4901301270009" style={{...iSt,flex:1}}/><button onClick={()=>doLookup()} disabled={loading} style={{...bSm,background:"#4CAF50",color:"#fff",padding:"10px 14px",fontSize:14}}>検索</button></div>
+    {loading&&<div style={{textAlign:"center",padding:16,color:"#666"}}>🔍 検索中...</div>}
+    {err&&<div style={{background:"#fff3e0",borderRadius:8,padding:12,marginBottom:12,fontSize:13,color:"#e65100"}}>{err}</div>}
+    {result&&<div style={{background:"#f5f5f5",borderRadius:8,padding:12,marginBottom:12}}><div style={{fontSize:14,fontWeight:"bold",marginBottom:4}}>{result.name?"✅ "+result.name:"商品名が見つかりませんでした"}</div><button onClick={()=>{onFound(result);onClose();}} style={{marginTop:8,width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>この商品を登録画面へ</button></div>}
+    <button onClick={()=>{stopCamera();onClose();}} style={{width:"100%",padding:"10px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:14}}>閉じる</button>
+  </div></div>);
+}
+
+function ReceiptModal({onClose,onAdd}){
+  const[apiKey,setApiKey]=useState("");const[img,setImg]=useState(null);const[loading,setLoading]=useState(false);const[result,setResult]=useState(null);const fileRef=useRef();
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{background:"#fff",borderRadius:16,padding:24,width:360,maxHeight:"80vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+    <h3 style={{margin:"0 0 16px",color:"#2e7d32"}}>🧾 レシート読み取り</h3>
+    <div style={{background:"#fff3e0",borderRadius:8,padding:12,marginBottom:16,fontSize:13}}>⚠️ Claude APIキーが必要です。</div>
+    <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-..." style={{...iSt,marginBottom:12}}/>
+    <button onClick={()=>fileRef.current.click()} style={{width:"100%",padding:"12px",background:"#e8f5e9",border:"2px dashed #4CAF50",borderRadius:8,cursor:"pointer",marginBottom:8,color:"#2e7d32",fontWeight:"bold",fontSize:14}}>📷 レシート画像を選択</button>
+    <input ref={fileRef} type="file" accept="image/*" onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>setImg(r.result);r.readAsDataURL(f);}} style={{display:"none"}}/>
+    {img&&<img src={img} alt="receipt" style={{width:"100%",borderRadius:8,marginBottom:12,maxHeight:200,objectFit:"contain"}}/>}
+    <button onClick={async()=>{if(!apiKey||!img){alert("APIキーと画像を入力してください");return;}setLoading(true);try{const base64=img.split(",")[1];const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:base64}},{type:"text",text:"レシートの商品名と数量を読み取り、カテゴリ("+CATEGORIES.join("、")+")に分類。不明は\"不明\"。JSONのみ:[{\"name\":\"商品名\",\"category\":\"カテゴリ\",\"qty\":数量}]"}]}]})});const data=await res.json();const text=data.content.map(c=>c.text||"").join("");const parsed=JSON.parse(text.replace(/```json|```/g,"").trim());setResult(parsed.map(i=>({...i,location:"冷蔵室",expiry:"",id:genId()})));}catch(e){alert("解析失敗: "+e.message);}setLoading(false);}} disabled={loading} style={{width:"100%",padding:"12px",background:loading?"#ccc":"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:loading?"not-allowed":"pointer",fontWeight:"bold",marginBottom:16,fontSize:14}}>{loading?"解析中...":"🔍 解析する"}</button>
+    {result&&<div><b style={{color:"#2e7d32",fontSize:14}}>✅ 読み取り結果</b>{result.filter(i=>i.category!=="不明").map(i=><div key={i.id} style={{background:"#f5f5f5",borderRadius:8,padding:10,marginTop:8,fontSize:13}}><div><b>{i.name}</b>（{i.category}）× {i.qty}</div><select value={i.location} onChange={e=>{const v=e.target.value;setResult(r=>r.map(x=>x.id===i.id?{...x,location:v}:x));}} style={{...iSt,marginTop:4}}>{LOCATIONS.map(l=><option key={l} value={l}>{l}</option>)}</select></div>)}<button onClick={()=>{onAdd(result.filter(i=>i.category!=="不明"));onClose();}} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:12,fontSize:14}}>在庫に追加</button></div>}
+    <button onClick={onClose} style={{width:"100%",padding:"10px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",marginTop:8,fontSize:14}}>閉じる</button>
+  </div></div>);
+}
+
+function parseCSV(text){
+  text=text.replace(/^\uFEFF/,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  const lines=[];let cur="";let inQ=false;
+  for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(inQ&&text[i+1]==='"'){cur+='"';i++;}else{inQ=!inQ;}}else if(c==="\n"&&!inQ){lines.push(cur);cur="";}else{cur+=c;}}
+  if(cur.trim())lines.push(cur);
+  const rows=lines.map(line=>{const cells=[];let cell="";let inq=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){if(inq&&line[i+1]==='"'){cell+='"';i++;}else{inq=!inq;}}else if(c===","&&!inq){cells.push(cell);cell="";}else{cell+=c;}}cells.push(cell);return cells;});
+  if(rows.length<2)return[];const headers=rows[0].map(h=>h.trim());
+  return rows.slice(1).filter(r=>r.some(c=>c.trim())).map(r=>{const obj={};headers.forEach((h,i)=>obj[h]=(r[i]||"").trim());return{id:genId(),name:obj["商品名"]||"",detail:"",category:obj["種類"]||"",qty:parseFloat(obj["個数"])||1,location:obj["場所"]||"冷蔵室",expiry:obj["賞味期限"]||"",note:obj["メモ"]||""};}).filter(i=>i.name);
+}
+
+function ExpiryRulesPage({rules,onSave,onBack}){
+  const[list,setList]=useState([...rules]);const[newName,setNewName]=useState("");const[newDays,setNewDays]=useState(3);const[editId,setEditId]=useState(null);const[editName,setEditName]=useState("");const[editDays,setEditDays]=useState(3);
+  const addRule=()=>{if(!newName.trim())return;if(list.some(r=>r.name===newName.trim())){alert("同じ品名が既に登録されています");return;}setList(l=>[...l,{id:genId(),name:newName.trim(),days:newDays}]);setNewName("");setNewDays(3);};
+  return(<div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><button onClick={onBack} style={{...bSm,background:"#eee",color:"#333",padding:"8px 12px"}}>‹ 戻る</button><h3 style={{margin:0,color:"#2e7d32",fontSize:16}}>🕐 賞味期限設定</h3></div>
+    <div style={{background:"#e8f5e9",borderRadius:8,padding:10,marginBottom:14,fontSize:12,color:"#2e7d32"}}>品名を部分一致で検索し、登録時に自動で賞味期限を設定します。</div>
+    <div style={{background:"#fff",borderRadius:10,padding:12,marginBottom:14,border:"1px solid #e0e0e0"}}>
+      <div style={{fontSize:13,fontWeight:"bold",color:"#555",marginBottom:8}}>＋ 新しいルールを追加</div>
+      <div style={{marginBottom:8}}><label style={{fontSize:12,color:"#666"}}>品名（部分一致）</label><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="例: 豚こま、牛乳" style={iSt}/></div>
+      <div style={{marginBottom:10}}><NumberInput value={newDays} onChange={setNewDays} min={0} max={365} label={"賞味期限（日数）: "+newDays+"日"}/></div>
+      <button onClick={addRule} style={{width:"100%",padding:"11px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>＋ 追加</button>
+    </div>
+    <div style={{marginBottom:10,fontSize:13,fontWeight:"bold",color:"#555"}}>登録済みルール ({list.length}件)</div>
+    {list.length===0&&<div style={{textAlign:"center",color:"#bbb",padding:16,fontSize:13}}>ルールがありません</div>}
+    {list.map(r=>(<div key={r.id} style={{background:"#fff",borderRadius:10,padding:"10px 12px",marginBottom:8,border:"1px solid #e0e0e0"}}>
+      {editId===r.id
+        ?(<div><div style={{marginBottom:6}}><label style={{fontSize:12,color:"#666"}}>品名</label><input value={editName} onChange={e=>setEditName(e.target.value)} style={iSt}/></div><div style={{marginBottom:8}}><NumberInput value={editDays} onChange={setEditDays} min={0} max={365} label={"日数: "+editDays+"日"}/></div><div style={{display:"flex",gap:6}}><button onClick={()=>{setList(l=>l.map(r=>r.id===editId?{...r,name:editName,days:editDays}:r));setEditId(null);}} style={{flex:1,padding:"9px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:13}}>保存</button><button onClick={()=>setEditId(null)} style={{flex:1,padding:"9px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontSize:13}}>キャンセル</button></div></div>)
+        :(<div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1}}><div style={{fontWeight:"bold",fontSize:14,color:"#222"}}>{r.name}</div><div style={{fontSize:12,color:"#666",marginTop:2}}>{r.days}日後まで</div></div><button onClick={()=>{setEditId(r.id);setEditName(r.name);setEditDays(r.days);}} style={{...bSm,background:"#e3f2fd",color:"#1565c0",display:"flex",alignItems:"center",padding:"7px 8px"}}><EditIcon/></button><button onClick={()=>setList(l=>l.filter(x=>x.id!==r.id))} style={{...bSm,background:"#ffebee",color:"#c62828",display:"flex",alignItems:"center",padding:"7px 8px"}}><TrashIcon/></button></div>)
+      }
+    </div>))}
+    <button onClick={()=>onSave(list)} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:8,fontSize:15}}>保存</button>
+  </div>);
+}
+
+function TabVisibilityPage({tabOrder,hiddenTabs,onSave,onBack}){
+  const[hidden,setHidden]=useState(new Set(hiddenTabs));
+  const toggle=(t)=>setHidden(prev=>{const s=new Set(prev);s.has(t)?s.delete(t):s.add(t);return s;});
+  return(<div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><button onClick={onBack} style={{...bSm,background:"#eee",color:"#333",padding:"8px 12px"}}>‹ 戻る</button><h3 style={{margin:0,color:"#2e7d32",fontSize:16}}>👁 タブの表示/非表示</h3></div>
+    <div style={{background:"#e8f5e9",borderRadius:8,padding:10,marginBottom:14,fontSize:12,color:"#2e7d32"}}>非表示にしたタブはホーム画面から見えなくなります。データは保持されます。</div>
+    {tabOrder.map(t=>(<div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff",borderRadius:10,padding:"12px 16px",marginBottom:8,border:"1px solid #e0e0e0"}}>
+      <span style={{fontSize:15,fontWeight:"bold",color:hidden.has(t)?"#bbb":"#222"}}>{t}</span>
+      <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+        <span style={{fontSize:13,color:hidden.has(t)?"#e57373":"#2e7d32",fontWeight:"bold"}}>{hidden.has(t)?"非表示":"表示中"}</span>
+        <div onClick={()=>toggle(t)} style={{width:48,height:26,borderRadius:13,background:hidden.has(t)?"#ffcdd2":"#c8e6c9",position:"relative",transition:"background .2s",cursor:"pointer",flexShrink:0}}><div style={{width:22,height:22,borderRadius:"50%",background:hidden.has(t)?"#e53935":"#4CAF50",position:"absolute",top:2,left:hidden.has(t)?2:24,transition:"left .2s",boxShadow:"0 1px 4px rgba(0,0,0,0.2)"}}/></div>
+      </label>
+    </div>))}
+    <button onClick={()=>onSave([...hidden])} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:8,fontSize:15}}>保存</button>
+  </div>);
+}
+
+// ★ タブ結合ページ
+function TabMergePage({tabOrder,tabChildren,onSave,onBack}){
+  const[parent,setParent]=useState(tabOrder[0]||"");
+  const[children,setChildren]=useState([]);
+  // 既存の結合を読み込む
+  useEffect(()=>{setChildren(tabChildren[parent]||[]);},[parent,tabChildren]);
+  const addChild=(c)=>{if(!c||children.includes(c)||c===parent||children.length>=10)return;setChildren(prev=>[...prev,c]);};
+  const removeChild=(c)=>setChildren(prev=>prev.filter(x=>x!==c));
+  const childOpts=tabOrder.filter(t=>t!==parent&&!children.includes(t));
+  return(<div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+      <button onClick={onBack} style={{...bSm,background:"#eee",color:"#333",padding:"8px 12px"}}>‹ 戻る</button>
+      <h3 style={{margin:0,color:"#2e7d32",fontSize:16}}>🔗 タブ結合</h3>
+    </div>
+    <div style={{background:"#e8f5e9",borderRadius:8,padding:10,marginBottom:14,fontSize:12,color:"#2e7d32",lineHeight:1.6}}>
+      親タブの中に子タブを追加します。子タブはホームのタブ一覧から移動します。（最大10個）
+    </div>
+    <div style={{marginBottom:14}}>
+      <label style={{fontSize:13,color:"#666",display:"block",marginBottom:4}}>親タブを設定してください</label>
+      <select value={parent} onChange={e=>setParent(e.target.value)} style={iSt}>
+        {tabOrder.map(t=><option key={t} value={t}>{t}</option>)}
+      </select>
+    </div>
+    <div style={{marginBottom:10}}>
+      <label style={{fontSize:13,color:"#666",display:"block",marginBottom:4}}>子タブを追加 ({children.length}/10)</label>
+      <select value="" onChange={e=>{addChild(e.target.value);}} style={{...iSt,color:"#2e7d32"}} disabled={children.length>=10||childOpts.length===0}>
+        <option value="">子タブを選択...</option>
+        {childOpts.map(t=><option key={t} value={t}>{t}</option>)}
+      </select>
+    </div>
+    {children.length>0&&<div style={{background:"#f5f5f5",borderRadius:10,padding:10,marginBottom:14}}>
+      <div style={{fontSize:12,color:"#888",marginBottom:8}}>設定済みの子タブ</div>
+      {children.map(c=><div key={c} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff",borderRadius:8,padding:"8px 12px",marginBottom:6,border:"1px solid #e0e0e0"}}>
+        <span style={{fontSize:14,fontWeight:"bold"}}>{c}</span>
+        <button onClick={()=>removeChild(c)} style={{...bSm,background:"#ffebee",color:"#c62828",padding:"5px 8px",fontSize:12}}>削除</button>
+      </div>)}
+    </div>}
+    <div style={{background:"#fff8e1",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12,color:"#795548",lineHeight:1.6}}>
+      ⚠️ 保存すると子タブはホームのタブバーから移動し、親タブ内に表示されます。
+    </div>
+    <button onClick={()=>onSave(parent,children)} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>保存</button>
+  </div>);
+}
+
+function SettingsModal({tabOrder,hiddenTabs,onSaveHiddenTabs,onClose,onRenameTab,onExport,onImportClick,onAddTab,onRemoveTab,expiryRules,onSaveExpiryRules,updateLogs,onSaveUpdateLogs,tabChildren,onSaveTabChildren}){
+  const[page,setPage]=useState("top");const[tabNames,setTabNames]=useState([...tabOrder]);const[newTab,setNewTab]=useState("");
+  const[selCat,setSelCat]=useState(CATEGORIES[0]);const[details,setDetails]=useState([...CATEGORY_DETAILS[CATEGORIES[0]]]);const[newDetail,setNewDetail]=useState("");
+  const[bugText,setBugText]=useState("");const[bugMsg,setBugMsg]=useState("");const[bugSent,setBugSent]=useState(false);
+  const[sugText,setSugText]=useState("");const[sugMsg,setSugMsg]=useState("");const[sugSent,setSugSent]=useState(false);
+  const[newLog,setNewLog]=useState("");const[editLogId,setEditLogId]=useState(null);const[editLogText,setEditLogText]=useState("");
+  const addLog=()=>{if(!newLog.trim())return;onSaveUpdateLogs([{id:genId(),text:newLog.trim(),date:todayStr()},...updateLogs]);setNewLog("");};
+  const deleteLog=(id)=>{if(window.confirm("削除しますか？"))onSaveUpdateLogs(updateLogs.filter(l=>l.id!==id));};
+  const saveEditLog=(id)=>{onSaveUpdateLogs(updateLogs.map(l=>l.id===id?{...l,text:editLogText}:l));setEditLogId(null);};
+  const customTabs=tabOrder.filter(t=>!DEFAULT_TABS.includes(t));
+  const sendForm=async(subject,message,logKey,setSent,setMsg)=>{if(!message.trim())return;const logs=await getDayLogFS(logKey);if(logs.filter(d=>d===todayStr()).length>=3){setMsg("本日の送信上限（3回）に達しました。");return;}setSent(true);try{await fetch("https://formsubmit.co/ajax/tokusuru.saito1120@gmail.com",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({subject,message,_captcha:"false"})});await addDayLogFS(logKey);setMsg("送信しました。ありがとうございます。");}catch{setMsg("送信に失敗しました。");}setSent(false);};
+  const[menuItems,setMenuItems]=useState([
+    {key:"expiry_rules",label:"🕐 賞味期限設定"},
+    {key:"category",label:"🏷️ 種類プルダウン変更"},
+    {key:"details",label:"📋 詳細プルダウン変更"},
+    {key:"tabname",label:"📑 タブ名変更"},
+    {key:"addtab",label:"➕ タブ追加"},
+    {key:"tabmerge",label:"🔗 タブ結合"},
+    {key:"tabvisibility",label:"👁 タブの表示/非表示"},
+    {key:"pc",label:"💻 PC連動"},
+    {key:"updatelog",label:"📝 アップデート履歴"},
+    {key:"suggest",label:"💡 改善提案"},
+    {key:"bug",label:"🐛 バグ報告"},
+  ]);
+  const PH=({title})=>(<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><button onClick={()=>setPage("top")} style={{...bSm,background:"#eee",color:"#333",padding:"8px 12px"}}>‹ 戻る</button><h3 style={{margin:0,color:"#2e7d32",fontSize:16,flex:1}}>{title}</h3></div>);
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:700,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div style={{background:"#fff",borderRadius:16,padding:24,width:380,maxHeight:"88vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
+      {page==="top"&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}><div style={{display:"flex",alignItems:"center",gap:6}}><h3 style={{margin:0,color:"#2e7d32"}}>⚙️ 設定</h3><span style={{fontSize:11,color:"#bbb"}}>{VERSION}</span></div><button onClick={onClose} style={{...bSm,background:"#e8f5e9",color:"#2e7d32",display:"flex",alignItems:"center",gap:4,padding:"8px 12px"}}><HomeIcon/> ホーム</button></div>}
+      {page==="top"&&<DraggableList items={menuItems} keyFn={m=>m.key} onReorder={setMenuItems} renderItem={m=>(<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><span style={{cursor:"grab",color:"#ccc",flexShrink:0}}><DragHandle/></span><button onClick={()=>setPage(m.key)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",flex:1,padding:"14px 16px",background:"#f9f9f9",border:"none",borderRadius:10,cursor:"pointer",fontSize:15,fontWeight:"bold",color:"#222"}}><span>{m.label}</span><span style={{color:"#aaa",fontSize:20}}>›</span></button></div>)}/>}
+      {page==="expiry_rules"&&<ExpiryRulesPage rules={expiryRules} onSave={r=>{onSaveExpiryRules(r);setPage("top");alert("保存しました");}} onBack={()=>setPage("top")}/>}
+      {page==="category"&&<><PH title="🏷️ 種類プルダウン変更"/><p style={{fontSize:13,color:"#888",marginBottom:12}}>※ 種類名の変更は再読み込み後に反映されます</p>{CATEGORIES.map((c,i)=><div key={i} style={{background:"#f5f5f5",borderRadius:8,padding:"10px 12px",marginBottom:6,fontSize:14}}>{c}</div>)}<button onClick={()=>setPage("top")} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:8,fontSize:14}}>完了</button></>}
+      {page==="details"&&<><PH title="📋 詳細プルダウン変更"/><select value={selCat} onChange={e=>{setSelCat(e.target.value);setDetails([...CATEGORY_DETAILS[e.target.value]]);}} style={{...iSt,marginBottom:12}}>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select><DraggableList items={details} keyFn={(_,i)=>i} onReorder={setDetails} renderItem={(d,i)=><div style={{display:"flex",alignItems:"center",gap:6,background:"#f5f5f5",borderRadius:8,padding:"7px 10px",marginBottom:5}}><span style={{cursor:"grab",color:"#ccc"}}><DragHandle/></span><input value={d} onChange={e=>{const v=e.target.value;setDetails(prev=>prev.map((x,j)=>j===i?v:x));}} style={{...iSt,flex:1,padding:"6px 8px",background:"#fff",fontSize:13}}/><button onClick={()=>setDetails(prev=>prev.filter((_,j)=>j!==i))} style={{...bSm,background:"#ffebee",color:"#c62828",padding:"6px 8px",flexShrink:0}}>✕</button></div>}/><div style={{display:"flex",gap:8,marginTop:10}}><input value={newDetail} onChange={e=>setNewDetail(e.target.value)} placeholder="新しい項目を追加" style={{...iSt,flex:1}}/><button onClick={()=>{if(newDetail.trim()){setDetails(p=>[...p,newDetail.trim()]);setNewDetail("");}}} style={{...bSm,background:"#4CAF50",color:"#fff",padding:"10px 14px",fontSize:14}}>追加</button></div><button onClick={()=>{CATEGORY_DETAILS[selCat]=[...details];setPage("top");alert("保存しました");}} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:12,fontSize:14}}>保存</button></>}
+      {page==="tabname"&&<><PH title="📑 タブ名変更"/>{tabNames.map((name,i)=><div key={i} style={{marginBottom:10}}><label style={{fontSize:13,color:"#666"}}>タブ {i+1}</label><input value={name} onChange={e=>{const v=e.target.value;setTabNames(prev=>prev.map((n,j)=>j===i?v:n));}} style={iSt}/></div>)}<button onClick={()=>{onRenameTab(tabNames);setPage("top");}} style={{width:"100%",padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:4,fontSize:14}}>保存</button></>}
+      {page==="addtab"&&<><PH title="➕ タブ追加"/><div style={{display:"flex",gap:8,marginBottom:20}}><input value={newTab} onChange={e=>setNewTab(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){const n=newTab.trim();if(!n||tabOrder.includes(n))return;onAddTab(n);setNewTab("");alert("「"+n+"」タブを追加しました");}}} placeholder="例: 常備薬..." style={{...iSt,flex:1}}/><button onClick={()=>{const n=newTab.trim();if(!n||tabOrder.includes(n))return;onAddTab(n);setNewTab("");alert("「"+n+"」タブを追加しました");}} style={{...bSm,background:"#4CAF50",color:"#fff",padding:"10px 16px",fontSize:14}}>追加</button></div>{customTabs.map(t=><div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:"#f5f5f5",borderRadius:8,padding:"11px 12px",marginBottom:6}}><span style={{fontSize:14}}>{t}</span><button onClick={()=>{if(window.confirm("「"+t+"」を削除しますか？"))onRemoveTab(t);}} style={{...bSm,background:"#ffebee",color:"#c62828",display:"flex",alignItems:"center",padding:"7px 8px"}}><TrashIcon/></button></div>)}{customTabs.length===0&&<div style={{textAlign:"center",color:"#bbb",fontSize:13,padding:12}}>追加済みのタブはありません</div>}<button onClick={()=>setPage("top")} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginTop:8,fontSize:14}}>戻る</button></>}
+      {page==="tabmerge"&&<TabMergePage tabOrder={tabOrder} tabChildren={tabChildren} onBack={()=>setPage("top")} onSave={(parent,children)=>{onSaveTabChildren(parent,children);setPage("top");alert("保存しました");}}/>}
+      {page==="tabvisibility"&&<TabVisibilityPage tabOrder={tabOrder} hiddenTabs={hiddenTabs} onSave={h=>{onSaveHiddenTabs(h);setPage("top");alert("保存しました");}} onBack={()=>setPage("top")}/>}
+      {page==="pc"&&<><PH title="💻 PC連動"/><div style={{marginBottom:16}}><div style={{fontSize:14,fontWeight:"bold",marginBottom:6}}>📤 エクスポート（CSV）</div><button onClick={onExport} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>📥 CSVをダウンロード</button></div><div style={{background:"#e3f2fd",borderRadius:8,padding:12,marginBottom:16,fontSize:12,color:"#1565c0"}}><b>CSVインポート手順</b><br/>① エクスポートしたCSVをExcelで開く<br/>② 編集後、「名前を付けて保存」<br/>③ ファイルの種類：<b>CSV（カンマ区切り）</b>を選択<br/>④ 「はい」で保存してインポート</div><div style={{borderTop:"1px solid #eee",paddingTop:16}}><div style={{fontSize:14,fontWeight:"bold",marginBottom:6}}>📂 インポート（CSV）</div><button onClick={onImportClick} style={{width:"100%",padding:"13px",background:"#e8f5e9",color:"#2e7d32",border:"2px solid #4CAF50",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>📂 CSVを読み込む</button></div></>}
+      {page==="updatelog"&&<div><PH title="📝 アップデート履歴"/><div style={{marginBottom:16}}><textarea value={newLog} onChange={e=>setNewLog(e.target.value)} placeholder="対応内容を入力..." rows={3} style={{...iSt,resize:"none",fontFamily:"inherit",marginBottom:8}}/><button onClick={addLog} style={{width:"100%",padding:"11px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>＋ 追加</button></div>{updateLogs.length===0&&<div style={{textAlign:"center",color:"#bbb",fontSize:13,padding:12}}>履歴がありません</div>}<DraggableList items={updateLogs} keyFn={l=>l.id} onReorder={onSaveUpdateLogs} renderItem={log=>(<div style={{background:"#f9f9f9",borderRadius:10,padding:"10px 12px",marginBottom:8,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}><div style={{display:"flex",alignItems:"flex-start",gap:6}}><span style={{cursor:"grab",color:"#ccc",paddingTop:2,flexShrink:0}}><DragHandle/></span><div style={{flex:1,minWidth:0}}>{editLogId===log.id?<div><textarea value={editLogText} onChange={e=>setEditLogText(e.target.value)} rows={3} style={{...iSt,resize:"none",fontFamily:"inherit",marginBottom:6,fontSize:13}}/><div style={{display:"flex",gap:6}}><button onClick={()=>saveEditLog(log.id)} style={{...bSm,background:"#4CAF50",color:"#fff",padding:"7px 12px"}}>保存</button><button onClick={()=>setEditLogId(null)} style={{...bSm,background:"#eee",padding:"7px 12px"}}>キャンセル</button></div></div>:<div><div style={{fontSize:11,color:"#aaa",marginBottom:3}}>{log.date}</div><div style={{fontSize:13,color:"#333",wordBreak:"break-word"}}>{log.text}</div></div>}</div>{editLogId!==log.id&&<div style={{display:"flex",gap:3,flexShrink:0}}><button onClick={()=>{setEditLogId(log.id);setEditLogText(log.text);}} style={{...bSm,background:"#e3f2fd",color:"#1565c0",display:"flex",alignItems:"center",padding:"7px 7px"}}><EditIcon/></button><button onClick={()=>deleteLog(log.id)} style={{...bSm,background:"#ffebee",color:"#c62828",display:"flex",alignItems:"center",padding:"7px 7px"}}><TrashIcon/></button></div>}</div></div>)}/></div>}
+      {page==="suggest"&&<><PH title="💡 改善提案"/><textarea value={sugText} onChange={e=>setSugText(e.target.value)} placeholder="例: ○○のような機能があると便利です。" rows={5} style={{...iSt,resize:"vertical",fontFamily:"inherit",marginBottom:12}}/>{sugMsg&&<div style={{background:sugMsg.includes("失敗")||sugMsg.includes("上限")?"#ffebee":"#e8f5e9",borderRadius:8,padding:10,marginBottom:12,fontSize:13,color:sugMsg.includes("失敗")||sugMsg.includes("上限")?"#c62828":"#2e7d32"}}>{sugMsg}</div>}<button onClick={()=>sendForm("【食料品管理アプリ】改善提案",sugText,SUG_KEY,setSugSent,setSugMsg)} disabled={sugSent} style={{width:"100%",padding:"12px",background:sugSent?"#bbb":"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:sugSent?"not-allowed":"pointer",fontWeight:"bold",fontSize:14}}>{sugSent?"送信中...":"送信する"}</button></>}
+      {page==="bug"&&<><PH title="🐛 バグ報告"/><textarea value={bugText} onChange={e=>setBugText(e.target.value)} placeholder="例: ○○画面で○○を押すと、○○になってしまいます..." rows={5} style={{...iSt,resize:"vertical",fontFamily:"inherit",marginBottom:12}}/>{bugMsg&&<div style={{background:bugMsg.includes("失敗")||bugMsg.includes("上限")?"#ffebee":"#e8f5e9",borderRadius:8,padding:10,marginBottom:12,fontSize:13,color:bugMsg.includes("失敗")||bugMsg.includes("上限")?"#c62828":"#2e7d32"}}>{bugMsg}</div>}<button onClick={()=>sendForm("【食料品管理アプリ】バグ報告",bugText,BUG_KEY,setBugSent,setBugMsg)} disabled={bugSent} style={{width:"100%",padding:"12px",background:bugSent?"#bbb":"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:bugSent?"not-allowed":"pointer",fontWeight:"bold",fontSize:14}}>{bugSent?"送信中...":"送信する"}</button></>}
+    </div>
+  </div>);
+}
+
+function ItemCard({item,onEdit,onDelete,onQtyChange,onAddToShop,hideDrag}){
+  const exp=item.expiry;const expired=isExpired(exp);const urgent=withinDays(exp);const bc=cardBorderColor(exp);
+  const btn={width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0,fontSize:15,fontWeight:"bold"};
+  const qtyDisplay=typeof item.qty==="number"?item.qty:0;
+  return(<div style={{background:expired?"#ffebee":"#fff",borderRadius:12,padding:"10px 12px",marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.08)",borderLeft:"4px solid "+bc,borderTop:"1px solid #eee",borderRight:"1px solid #eee",borderBottom:"1px solid #eee"}}>
+    <div style={{display:"flex",alignItems:"stretch",gap:8}}>
+      {!hideDrag&&<span style={{paddingTop:2,cursor:"grab",color:"#ccc",flexShrink:0,display:"flex",alignItems:"flex-start"}}><DragHandle/></span>}
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontWeight:"bold",fontSize:15,color:expired?"#b71c1c":"#222"}}>{item.name}</div>
+        <div style={{fontSize:12,color:"#888",display:"flex",gap:12,flexWrap:"wrap"}}><span>{item.category||""}{item.category?" · ":""}{item.location}</span>{item.createdAt&&<span>{"購入日: "+tsToDate(item.createdAt).slice(5).replace("-","/")}</span>}</div>
+        {exp&&<div style={{fontSize:12,color:expired?"#b71c1c":urgent?"#f44336":"#666"}}>{"賞味期限: "+exp+(expired?" 期限切れ":"")}</div>}
+        {item.note&&<div style={{fontSize:12,color:"#999"}}>📝 {item.note}</div>}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,alignItems:"flex-end",justifyContent:"center"}}>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={()=>onAddToShop(item)} style={{...btn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button>
+          <button onClick={()=>onEdit(item)} style={{...btn,background:"#e3f2fd",color:"#1565c0"}}><EditIcon/></button>
+          <button onClick={()=>onDelete(item.id)} style={{...btn,background:"#ffebee",color:"#c62828"}}><TrashIcon/></button>
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <button onClick={()=>onQtyChange(item.id,-1)} style={{...btn,background:"#ffebee",color:"#c62828"}}>－</button>
+          <span style={{minWidth:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:14,color:qtyDisplay===0?"#aaa":"#222",background:"#f9f9f9",borderRadius:8,border:"1px solid #eee",padding:"0 4px"}}>{qtyDisplay}</span>
+          <button onClick={()=>onQtyChange(item.id,1)} style={{...btn,background:"#e8f5e9",color:"#2e7d32"}}>＋</button>
+        </div>
+      </div>
+    </div>
+  </div>);
+}
+
+function MemoCard({memo,onEdit,onDelete}){
+  const[editing,setEditing]=useState(false);const[editText,setEditText]=useState(memo.text);
+  const taRef=useRef();const ar=(el)=>{if(!el)return;el.style.height="auto";el.style.height=el.scrollHeight+"px";};
+  useEffect(()=>{if(editing&&taRef.current){ar(taRef.current);taRef.current.focus();}},[editing]);
+  const save=()=>{if(editText.trim())onEdit(memo.id,editText.trim());setEditing(false);};
+  return(<div style={{background:"#fff",borderRadius:12,padding:"12px 14px",marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.07)",borderLeft:"4px solid #4CAF50",borderTop:"1px solid #eee",borderRight:"1px solid #eee",borderBottom:"1px solid #eee"}}>
+    <div style={{display:"flex",alignItems:"flex-start",gap:6}}>
+      <span style={{paddingTop:3,cursor:"grab",color:"#ccc",flexShrink:0}}><DragHandle/></span>
+      <div style={{flex:1,minWidth:0}}><div style={{fontSize:11,color:"#aaa",marginBottom:4}}>{memo.date}</div>{editing?<><textarea ref={taRef} value={editText} onChange={e=>{setEditText(e.target.value);ar(e.target);}} rows={3} style={{...iSt,resize:"none",fontFamily:"inherit",minHeight:60,overflow:"hidden",marginBottom:6,fontSize:13}}/><div style={{display:"flex",gap:6}}><button onClick={save} style={{...bSm,background:"#4CAF50",color:"#fff",padding:"7px 14px"}}>保存</button><button onClick={()=>{setEditing(false);setEditText(memo.text);}} style={{...bSm,background:"#eee",padding:"7px 12px"}}>キャンセル</button></div></>:<div style={{fontSize:14,color:"#333",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{memo.text}</div>}</div>
+      {!editing&&<div style={{display:"flex",gap:3,flexShrink:0}}><button onClick={()=>setEditing(true)} style={{...bSm,background:"#e3f2fd",color:"#1565c0",display:"flex",alignItems:"center",padding:"7px 8px"}}><EditIcon/></button><button onClick={()=>{if(window.confirm("削除しますか？"))onDelete(memo.id);}} style={{...bSm,background:"#ffebee",color:"#c62828",display:"flex",alignItems:"center",padding:"7px 8px"}}><TrashIcon/></button></div>}
+    </div>
+  </div>);
+}
+
+function MemoTab({memos,onAdd,onEdit,onDelete,onReorder}){
+  const[text,setText]=useState("");const taRef=useRef();
+  const ar=(el)=>{if(!el)return;el.style.height="auto";el.style.height=el.scrollHeight+"px";};
+  useEffect(()=>{if(taRef.current)ar(taRef.current);},[text]);
+  return(<div>
+    <h4 style={{margin:"0 0 10px",color:"#2e7d32"}}>📝 メモ</h4>
+    <div style={{marginBottom:14}}><textarea ref={taRef} value={text} onChange={e=>{setText(e.target.value);ar(e.target);}} placeholder="メモを入力..." rows={3} style={{...iSt,resize:"none",fontFamily:"inherit",minHeight:72,overflow:"hidden",marginBottom:8}}/><button onClick={()=>{if(!text.trim())return;onAdd(text.trim());setText("");}} style={{width:"100%",padding:"11px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>＋ 追加</button></div>
+    {memos.length===0&&<div style={{textAlign:"center",color:"#bbb",padding:24,fontSize:13}}>メモがありません</div>}
+    <DraggableList items={memos} keyFn={m=>m.id} onReorder={onReorder} renderItem={memo=><MemoCard memo={memo} onEdit={onEdit} onDelete={onDelete}/>}/>
+  </div>);
+}
+
+function App(){
+  const[items,setItems]=useState([]);
+  const[loading,setLoading]=useState(true);
+  const[tabOrder,setTabOrder]=useState([...DEFAULT_TABS]);
+  const[tab,setTab]=useState("メモ");
+  // ★ tabChildren: {親タブ名: [子タブ名...]}
+  const[tabChildren,setTabChildren]=useState({});
+  const[subTab,setSubTab]=useState({});// {親タブ名: 現在選択中の子タブ}
+  const[fridgeTab,setFridgeTab]=useState("冷蔵室");
+  const[showForm,setShowForm]=useState(false);
+  const[editItem,setEditItem]=useState(null);
+  const[showReceipt,setShowReceipt]=useState(false);
+  const[showBarcode,setShowBarcode]=useState(false);
+  const[barcodePrefill,setBarcodePrefill]=useState(null);
+  const[showSettings,setShowSettings]=useState(false);
+  const[search,setSearch]=useState("");
+  const[shopList,setShopList]=useState([]);
+  const[memos,setMemos]=useState([]);
+  const[memoLastSeen,setMemoLastSeen]=useState("");
+  const[showReflect,setShowReflect]=useState(false);
+  const[pendingDone,setPendingDone]=useState([]);
+  const[sortStates,setSortStates]=useState({});
+  const[expiryRules,setExpiryRules]=useState(DEFAULT_EXPIRY_RULES);
+  const[hiddenTabs,setHiddenTabs]=useState([]);
+  const[qtyModal,setQtyModal]=useState(null);
+  const[qtyZeroModal,setQtyZeroModal]=useState(null);
+  const[updateLogsState,setUpdateLogsState]=useState([]);
+  const[syncIndicator,setSyncIndicator]=useState(false);
+
+  const settingsReady=useRef(false);
+  const isEditingShop=useRef(false);
+  const tabOrderRef=useRef([...DEFAULT_TABS]);
+  const shopListRef=useRef([]);
+  const hiddenTabsRef=useRef([]);
+  const expiryRulesRef=useRef(DEFAULT_EXPIRY_RULES);
+  const tabChildrenRef=useRef({});
+
+  // ★ 子タブになっているタブはトップレベルには表示しない
+  const allChildTabs=Object.values(tabChildren).flat();
+  const visibleTabs=tabOrder.filter(t=>!hiddenTabs.includes(t)&&!allChildTabs.includes(t));
+
+  const getSortState=(t)=>sortStates[t]||{sortKey:"none",sortDir:"asc"};
+  const setSortState=(t,k,d)=>setSortStates(prev=>({...prev,[t]:{sortKey:k,sortDir:d}}));
+  const fileRef=useRef();
+  // ★ タブドラッグ: トップレベルタブ用
+  const tabDrag=useRef(null);const[tabDragOver,setTabDragOver]=useState(null);
+  const customTabs=tabOrder.filter(t=>!DEFAULT_TABS.includes(t));
+
+  // ★ 現在アクティブな実際のタブ（親タブが選ばれていれば子タブの選択を反映）
+  const getActiveTab=()=>{
+    const children=tabChildren[tab]||[];
+    if(children.length>0){
+      const cur=subTab[tab];
+      if(cur&&children.includes(cur))return cur;
+      return tab;// 親タブ自身を表示
+    }
+    return tab;
+  };
+  const activeTab=getActiveTab();
+
+  const getDefaultLocation=()=>{
+    const at=activeTab;
+    if(at==="冷蔵庫")return fridgeTab;
+    if(LOCATIONS.includes(at)||customTabs.includes(at))return at;
+    return"冷蔵室";
+  };
+
+  const fetchItems=useCallback(async()=>{try{const data=await fsGet("items");if(data)setItems(data);}catch(e){console.error(e);}},[]);
+  const fetchMemos=useCallback(async()=>{try{const data=await fsGet("memos");if(data)setMemos(data.sort((a,b)=>b.ts>a.ts?1:-1));}catch(e){console.error(e);}},[]);
+
+  const saveMainSettings=useCallback(async(overrides={})=>{
+    if(!settingsReady.current)return;
+    const to=overrides.tabOrder||tabOrderRef.current;
+    const sl=overrides.shopList||shopListRef.current;
+    const ht=overrides.hiddenTabs||hiddenTabsRef.current;
+    const er=overrides.expiryRules||expiryRulesRef.current;
+    const tc=overrides.tabChildren||tabChildrenRef.current;
+    try{await fsSetDoc("settings","main",{tabOrderJson:JSON.stringify(to),shopListJson:JSON.stringify(sl),hiddenTabsJson:JSON.stringify(ht),expiryRulesJson:JSON.stringify(er),tabChildrenJson:JSON.stringify(tc)});}catch(e){console.error(e);}
+  },[]);
+
+  const saveUpdateLogsFS=useCallback(async(logs)=>{
+    setUpdateLogsState(logs);
+    try{await fsSetDoc("settings","updateLogs",{dataJson:JSON.stringify(logs)});}catch(e){console.error(e);}
+  },[]);
+
+  const fetchSettings=useCallback(async()=>{
+    try{
+      const s=await fsGetDoc("settings","main");
+      if(s){
+        if(s.tabOrderJson){try{const raw=JSON.parse(s.tabOrderJson);const t=migrateTabOrder(raw);setTabOrder(t);tabOrderRef.current=t;}catch{}}
+        if(s.shopListJson){try{const sl=JSON.parse(s.shopListJson);if(Array.isArray(sl)){setShopList(sl);shopListRef.current=sl;}}catch{}}
+        if(s.hiddenTabsJson){try{const h=JSON.parse(s.hiddenTabsJson);if(Array.isArray(h)){const hm=h.map(x=>x==="買い物リスト"?"買い物":x);setHiddenTabs(hm);hiddenTabsRef.current=hm;}}catch{}}
+        if(s.expiryRulesJson){try{const r=JSON.parse(s.expiryRulesJson);if(Array.isArray(r)&&r.length>0){setExpiryRules(r);expiryRulesRef.current=r;}}catch{}}
+        if(s.tabChildrenJson){try{const tc=JSON.parse(s.tabChildrenJson);if(tc&&typeof tc==="object"){setTabChildren(tc);tabChildrenRef.current=tc;}}catch{}}
+        if(s.memoLastSeen)setMemoLastSeen(s.memoLastSeen);
+      }
+    }catch(e){console.error(e);}
+    try{const ul=await fsGetDoc("settings","updateLogs");if(ul&&ul.dataJson){try{const d=JSON.parse(ul.dataJson);if(Array.isArray(d))setUpdateLogsState(d);}catch{}}}catch{}
+    settingsReady.current=true;
+  },[]);
+
+  useEffect(()=>{
+    (async()=>{await Promise.all([fetchItems(),fetchSettings(),fetchMemos()]);setLoading(false);})();
+    const onFocus=()=>{fetchItems();fetchMemos();};
+    window.addEventListener("focus",onFocus);
+    return()=>window.removeEventListener("focus",onFocus);
+  },[]);
+
+  const updateShopList=useCallback((newList)=>{
+    const list=typeof newList==="function"?newList(shopListRef.current):newList;
+    shopListRef.current=list;setShopList(list);
+    if(settingsReady.current)saveMainSettings({shopList:list});
+  },[saveMainSettings]);
+
+  const updateTabOrder=useCallback((newOrder)=>{tabOrderRef.current=newOrder;setTabOrder(newOrder);if(settingsReady.current)saveMainSettings({tabOrder:newOrder});},[saveMainSettings]);
+  const saveHiddenTabs=useCallback((arr)=>{hiddenTabsRef.current=arr;setHiddenTabs(arr);if(settingsReady.current)saveMainSettings({hiddenTabs:arr});},[saveMainSettings]);
+  const saveExpiryRules=useCallback((rules)=>{expiryRulesRef.current=rules;setExpiryRules(rules);if(settingsReady.current)saveMainSettings({expiryRules:rules});},[saveMainSettings]);
+
+  // ★ タブ結合保存
+  const saveTabChildren=useCallback((parent,children)=>{
+    const newTc={...tabChildrenRef.current,[parent]:children};
+    tabChildrenRef.current=newTc;setTabChildren(newTc);
+    if(settingsReady.current)saveMainSettings({tabChildren:newTc});
+  },[saveMainSettings]);
+
+  const saveMemoLastSeen=useCallback(async(ts)=>{setMemoLastSeen(ts);if(!settingsReady.current)return;try{await fsSet("settings","main",{memoLastSeen:ts});}catch{}},[]);
+  useEffect(()=>{if(tab==="メモ")saveMemoLastSeen(nowTs());},[tab]);
+
+  const pollShopAndMemos=useCallback(async()=>{
+    if(!settingsReady.current)return;
+    try{
+      if(!isEditingShop.current){const s=await fsGetDoc("settings","main");if(s&&s.shopListJson){try{const sl=JSON.parse(s.shopListJson);if(Array.isArray(sl)&&JSON.stringify(sl)!==JSON.stringify(shopListRef.current)){shopListRef.current=sl;setShopList(sl);setSyncIndicator(true);setTimeout(()=>setSyncIndicator(false),1500);}}catch{}}}
+      const data=await fsGet("memos");if(data)setMemos(data.sort((a,b)=>b.ts>a.ts?1:-1));
+    }catch(e){console.error(e);}
+  },[]);
+  useEffect(()=>{const id=setInterval(pollShopAndMemos,20000);return()=>clearInterval(id);},[pollShopAndMemos]);
+
+  const unreadMemoCount=memos.filter(m=>m.ts&&memoLastSeen&&m.ts>memoLastSeen).length;
+
+  // ★ タブドラッグ: トップレベル
+  const handleTabDragEnd=()=>{
+    if(tabDrag.current!==null&&tabDragOver!==null&&tabDrag.current!==tabDragOver){
+      const arr=[...tabOrder];const[item]=arr.splice(tabDrag.current,1);arr.splice(tabDragOver,0,item);updateTabOrder(arr);
+    }
+    tabDrag.current=null;setTabDragOver(null);
+  };
+
+  const addTab=useCallback(name=>{updateTabOrder([...tabOrderRef.current,name]);},[updateTabOrder]);
+  const removeTab=useCallback(name=>{
+    const newOrder=tabOrderRef.current.filter(t=>t!==name);updateTabOrder(newOrder);
+    items.filter(i=>i.location===name).forEach(i=>fsDel("items",i.id).catch(()=>{}));
+    if(tab===name)setTab(DEFAULT_TABS[0]);
+  },[updateTabOrder,items,tab]);
+
+  const getAutoExpiry=(name)=>{const res=autoExpiry(name,expiryRulesRef.current);return res?res.expiry:"";};
+  const buildCreatedAt=(purchaseDate)=>{if(purchaseDate)return purchaseDate+"T00:00:00.000Z";return nowTs();};
+
+  const addItems=async(arr)=>{
+    for(const item of arr){
+      const{id:_,_expiryCleared,purchaseDate,...data}=item;
+      if(!_expiryCleared&&!data.expiry){const ae=getAutoExpiry(data.name);if(ae)data.expiry=ae;}
+      data.createdAt=buildCreatedAt(purchaseDate);
+      const added=await fsAdd("items",data);
+      setItems(prev=>[...prev,{...data,id:added.id}]);
+    }
+    setShowForm(false);setBarcodePrefill(null);
+  };
+
+  const saveEdit=async(arr)=>{
+    const main=arr[0];const{id,_expiryCleared,purchaseDate,...data}=main;
+    if(!_expiryCleared&&!data.expiry){const ae=getAutoExpiry(data.name);if(ae)data.expiry=ae;}
+    // ★ 購入日が設定されていれば上書き、空なら既存を維持
+    if(purchaseDate){data.createdAt=buildCreatedAt(purchaseDate);}else if(!data.createdAt){data.createdAt=nowTs();}
+    await fsSet("items",id,data);
+    setItems(prev=>prev.map(i=>i.id===id?{...data,id}:i));
+    for(const extra of arr.slice(1)){
+      const{id:_,_expiryCleared:ec,purchaseDate:pd,...edata}=extra;
+      if(!ec&&!edata.expiry){const ae=getAutoExpiry(edata.name);if(ae)edata.expiry=ae;}
+      edata.createdAt=buildCreatedAt(pd);
+      const added=await fsAdd("items",edata);
+      setItems(prev=>[...prev,{...edata,id:added.id}]);
+    }
+    setEditItem(null);
+  };
+
+  const deleteItem=async(id)=>{if(!window.confirm("削除しますか？"))return;await fsDel("items",id);setItems(prev=>prev.filter(i=>i.id!==id));};
+
+  const addToShop=useCallback((itemOrName,silent=false)=>{
+    const name=typeof itemOrName==="string"?itemOrName:itemOrName.name;
+    if(shopListRef.current.some(s=>s.name===name)){if(!silent)alert("「"+name+"」はすでに買い物にあります");return;}
+    const newList=[...shopListRef.current,{id:genId(),name,qty:1,done:false}];
+    updateShopList(newList);
+    if(!silent&&typeof itemOrName!=="string")alert("「"+name+"」を買い物に追加しました");
+  },[updateShopList]);
+
+  useEffect(()=>{window._addToShopExternal=name=>{if(!shopListRef.current.some(s=>s.name===name)){updateShopList([...shopListRef.current,{id:genId(),name,qty:1,done:false}]);}};},[updateShopList]);
+
+  const doChangeQty=async(item,delta,updateDate)=>{
+    const newQty=Math.max(0,Math.round((item.qty+delta)*10)/10);
+    let newExpiry=item.expiry;
+    if(delta>0&&!item.expiry){const ae=getAutoExpiry(item.name);if(ae)newExpiry=ae;}
+    const patch={qty:newQty};
+    if(updateDate&&delta>0)patch.createdAt=nowTs();
+    if(newExpiry!==item.expiry)patch.expiry=newExpiry;
+    setItems(prev=>prev.map(i=>i.id===item.id?{...i,...patch,expiry:newExpiry}:i));
+    await fsSet("items",item.id,patch).catch(e=>console.error(e));
+    if(newQty===0&&item.qty>0)setQtyZeroModal({itemName:item.name});
+  };
+
+  const changeQty=async(id,delta)=>{
+    const item=items.find(i=>i.id===id);if(!item)return;
+    if(delta>0&&item.createdAt&&item.qty>0){setQtyModal({item});return;}
+    await doChangeQty(item,delta,false);
+  };
+
+  const handleQtyUpdateDate=async()=>{const item=qtyModal.item;setQtyModal(null);await doChangeQty(item,1,true);};
+  const handleQtyNewEntry=()=>{
+    const item=qtyModal.item;setQtyModal(null);
+    const ae=getAutoExpiry(item.name);
+    setBarcodePrefill({name:item.name,category:item.category||"",location:item.location,expiry:ae||""});
+    setShowForm(true);
+  };
+
+  const handleDeleteDone=()=>{
+    const done=shopListRef.current.filter(s=>s.done&&s.name);
+    if(done.length===0){updateShopList(shopListRef.current.filter(s=>!s.done));return;}
+    setPendingDone(done);setShowReflect(true);
+  };
+
+  const doReflectOverwrite=async()=>{
+    setShowReflect(false);const ci=[...items];
+    for(const s of pendingDone){
+      const bq=s.qty||1;const ae=getAutoExpiry(s.name);const m=ci.filter(i=>i.name===s.name);
+      if(m.length===1&&!m[0].expiry){const patch={qty:Math.round((m[0].qty+bq)*10)/10,createdAt:nowTs()};if(ae)patch.expiry=ae;try{await fsSet("items",m[0].id,patch);setItems(prev=>prev.map(i=>i.id===m[0].id?{...i,...patch}:i));}catch(e){console.error(e);}}
+      else{const data={name:s.name,detail:"",category:m[0]?m[0].category||"":"",qty:bq,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}}
+    }
+    updateShopList(shopListRef.current.filter(s=>!s.done));
+  };
+  const doReflectOverwriteNew=async()=>{
+    setShowReflect(false);const ci=[...items];
+    for(const s of pendingDone){
+      const bq=s.qty||1;const ae=getAutoExpiry(s.name);const m=ci.filter(i=>i.name===s.name);
+      if(m.length===1&&m[0].qty===0){const patch={qty:bq,createdAt:nowTs()};if(ae)patch.expiry=ae;try{await fsSet("items",m[0].id,patch);setItems(prev=>prev.map(i=>i.id===m[0].id?{...i,...patch}:i));}catch(e){console.error(e);}}
+      else{const loc=m.length===1?m[0].location:"冷蔵室";const data={name:s.name,detail:"",category:m[0]?m[0].category||"":"",qty:bq,location:loc,expiry:ae||"",note:"",createdAt:nowTs()};try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}}
+    }
+    updateShopList(shopListRef.current.filter(s=>!s.done));
+  };
+  const doReflectNew=async()=>{
+    setShowReflect(false);
+    for(const s of pendingDone){
+      const ae=getAutoExpiry(s.name);
+      const data={name:s.name,detail:"",category:"",qty:s.qty||1,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};
+      try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}
+    }
+    updateShopList(shopListRef.current.filter(s=>!s.done));
+  };
+  const doReflectCancel=()=>{setShowReflect(false);updateShopList(shopListRef.current.filter(s=>!s.done));};
+
+  const exportCSV=()=>{
+    const h="商品名,種類,個数,場所,賞味期限,メモ";
+    const rows=items.map(i=>'"'+i.name.replace(/"/g,'""')+'","'+(i.category||"").replace(/"/g,'""')+'",'+i.qty+',"'+(i.location||"").replace(/"/g,'""')+'","'+(i.expiry||"")+'","'+(i.note||"").replace(/"/g,'""')+'"');
+    const blob=new Blob(["\uFEFF",[h,...rows].join("\r\n")],{type:"text/csv;charset=utf-8"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="食料品リスト.csv";document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},100);
+  };
+
+  const handleCSVImport=e=>{
+    const f=e.target.files[0];if(!f)return;
+    const tryRead=(enc)=>new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=rej;r.readAsText(f,enc);});
+    (async()=>{
+      const raw=await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.onerror=rej;r.readAsArrayBuffer(f);});
+      const bytes=new Uint8Array(raw);const isUtf8Bom=bytes[0]===0xEF&&bytes[1]===0xBB&&bytes[2]===0xBF;
+      const enc=isUtf8Bom?"utf-8":"shift-jis";let text=await tryRead(enc);
+      if(!isUtf8Bom&&/[\ufffd]/.test(text))text=await tryRead("utf-8");
+      const parsed=parseCSV(text);
+      if(parsed.length===0){alert("インポートできる行がありませんでした。");return;}
+      if(!window.confirm(parsed.length+"件インポートします。既存データに追加されます。よろしいですか？"))return;
+      let ok=0;
+      for(const item of parsed){try{const{id:_,...data}=item;data.createdAt=nowTs();const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);ok++;}catch(e){console.error(e);}}
+      alert(ok+"件インポートしました。");
+    })();
+    e.target.value="";
+  };
+
+  const addMemo=async(text)=>{const data={text,date:todayStr(),ts:nowTs()};const added=await fsAdd("memos",data);setMemos(prev=>[{...data,id:added.id},...prev]);};
+  const editMemo=async(id,text)=>{await fsSet("memos",id,{text});setMemos(prev=>prev.map(m=>m.id===id?{...m,text}:m));};
+  const deleteMemo=async(id)=>{await fsDel("memos",id);setMemos(prev=>prev.filter(m=>m.id!==id));};
+
+  const filtered=arr=>search?arr.filter(i=>matchSearch(i.name,search)||matchSearch(i.category,search)||matchSearch(i.note,search)||matchSearch(i.yomi,search)):arr;
+  const expiryItems=items.filter(i=>i.expiry&&(isExpired(i.expiry)||withinDays(i.expiry))).sort((a,b)=>{const r=x=>isExpired(x.expiry)?0:1;return r(a)!==r(b)?r(a)-r(b):a.expiry.localeCompare(b.expiry);});
+  const byLoc=loc=>filtered(items.filter(i=>i.location===loc));
+  const reorderByLoc=(loc,ni)=>{const ids=ni.map(i=>i.id);setItems(prev=>[...ni,...prev.filter(i=>!ids.includes(i.id))]);};
+
+  const grouped={};
+  filtered(items).forEach(i=>{
+    const k=i.name+"|"+(i.category||"");
+    if(!grouped[k])grouped[k]={name:i.name,category:i.category||"",ids:[],locs:{},createdAt:i.createdAt||"",expiry:"",note:""};
+    grouped[k].ids.push(i.id);
+    grouped[k].locs[i.location]=(grouped[k].locs[i.location]||0)+(typeof i.qty==="number"?i.qty:0);
+    if((i.createdAt||"")>(grouped[k].createdAt||""))grouped[k].createdAt=i.createdAt||"";
+    if(i.expiry&&(!grouped[k].expiry||i.expiry<grouped[k].expiry))grouped[k].expiry=i.expiry;
+    if(i.note&&!grouped[k].note)grouped[k].note=i.note;
+  });
+
+  const renderSortBar=(tk)=>{
+    const{sortKey:sk,sortDir:sd}=getSortState(tk);
+    return<div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}><SortControl sortKey={sk} sortDir={sd} onChange={(k,d)=>setSortState(tk,k,d)}/></div>;
+  };
+
+  const handleAddToShopFromForm=(name)=>{
+    if(!name)return;
+    if(shopListRef.current.some(s=>s.name===name)){alert("「"+name+"」はすでに買い物にあります");return;}
+    updateShopList([...shopListRef.current,{id:genId(),name,qty:1,done:false}]);
+    alert("「"+name+"」を買い物に追加しました");
+  };
+
+  // ★ タブコンテンツのレンダリング（activeTabを使用）
+  const renderTabContent=(currentTab)=>{
+    if(currentTab==="メモ")return<MemoTab memos={memos} onAdd={addMemo} onEdit={editMemo} onDelete={deleteMemo} onReorder={setMemos}/>;
+
+    if(currentTab==="在庫一覧"){
+      const{sortKey:sk,sortDir:sd}=getSortState("在庫一覧");
+      const gvals=applySortGrouped(Object.values(grouped),sk,sd);
+      const btn={width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0,fontSize:15,fontWeight:"bold"};
+      return(<div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <h4 style={{margin:0,color:"#2e7d32"}}>在庫一覧 ({items.length}件)</h4>
+          <SortControl sortKey={sk} sortDir={sd} onChange={(k,d)=>setSortState("在庫一覧",k,d)}/>
+        </div>
+        {gvals.length===0&&<div style={{textAlign:"center",color:"#999",padding:24}}>在庫がありません</div>}
+        <DraggableList items={gvals} keyFn={g=>g.name+g.category} onReorder={ng=>{const no=ng.flatMap(g=>g.ids);setItems(prev=>{const m=Object.fromEntries(prev.map(i=>[i.id,i]));return[...no.map(id=>m[id]).filter(Boolean),...prev.filter(i=>!no.includes(i.id))];});}}
+          renderItem={g=>{
+            const rep=items.find(i=>g.ids.includes(i.id));
+            const expired=isExpired(g.expiry);const urgent=withinDays(g.expiry);
+            const totalQty=Object.values(g.locs).reduce((s,v)=>s+v,0);
+            return(<div style={{background:"#fff",borderRadius:12,padding:"10px 12px",marginBottom:8,boxShadow:"0 2px 8px rgba(0,0,0,0.07)",border:"1px solid #eee"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"stretch",gap:8}}>
+                <div style={{display:"flex",alignItems:"flex-start",gap:6,flex:1,minWidth:0}}>
+                  <span style={{paddingTop:2,cursor:"grab",flexShrink:0,color:"#ccc"}}><DragHandle/></span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:"bold",fontSize:15}}>{g.name}</div>
+                    <div style={{fontSize:12,color:"#888",marginBottom:2}}>{g.category}</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:2}}>
+                      {Object.entries(g.locs).map(([loc,qty])=><span key={loc} style={{background:qty===0?"#f5f5f5":"#e8f5e9",color:qty===0?"#aaa":"#2e7d32",borderRadius:16,padding:"3px 10px",fontSize:12,fontWeight:"bold"}}>{loc} ×{qty}</span>)}
+                    </div>
+                    {g.expiry&&<div style={{fontSize:12,color:expired?"#b71c1c":urgent?"#f44336":"#666",marginBottom:1}}>{"賞味期限: "+g.expiry+(expired?" 期限切れ":"")}</div>}
+                    {rep&&rep.createdAt&&<div style={{fontSize:12,color:"#aaa",marginBottom:1}}>{"購入日: "+tsToDate(rep.createdAt).slice(5).replace("-","/")}</div>}
+                    {g.note&&<div style={{fontSize:12,color:"#999"}}>📝 {g.note}</div>}
+                  </div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,alignItems:"flex-end",justifyContent:"center"}}>
+                  <div style={{display:"flex",gap:4}}>
+                    {rep&&<><button onClick={()=>addToShop(rep)} style={{...btn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button><button onClick={()=>setEditItem(rep)} style={{...btn,background:"#e3f2fd",color:"#1565c0"}}><EditIcon/></button></>}
+                    <button onClick={()=>{if(window.confirm(g.ids.length>1?"「"+g.name+"」の全"+g.ids.length+"件を削除しますか？":"削除しますか？")){g.ids.forEach(id=>fsDel("items",id));setItems(prev=>prev.filter(i=>!g.ids.includes(i.id)));} }} style={{...btn,background:"#ffebee",color:"#c62828"}}><TrashIcon/></button>
+                  </div>
+                  {rep&&<div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <button onClick={()=>changeQty(rep.id,-1)} style={{...btn,background:"#ffebee",color:"#c62828"}}>－</button>
+                    <span style={{minWidth:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:14,color:totalQty===0?"#aaa":"#222",background:"#f9f9f9",borderRadius:8,border:"1px solid #eee",padding:"0 4px"}}>{totalQty}</span>
+                    <button onClick={()=>changeQty(rep.id,1)} style={{...btn,background:"#e8f5e9",color:"#2e7d32"}}>＋</button>
+                  </div>}
+                </div>
+              </div>
+            </div>);
+          }}/>
+      </div>);
+    }
+
+    if(currentTab==="冷蔵庫"){
+      const{sortKey:sk,sortDir:sd}=getSortState("冷蔵庫_"+fridgeTab);
+      const sorted=applySortItems(byLoc(fridgeTab),sk,sd);
+      const counts={冷蔵室:items.filter(i=>i.location==="冷蔵室").length,野菜室:items.filter(i=>i.location==="野菜室").length,冷凍庫:items.filter(i=>i.location==="冷凍庫").length};
+      return(<div>
+        <div style={{display:"flex",gap:6,marginBottom:8}}>
+          {["冷蔵室","野菜室","冷凍庫"].map(t=><button key={t} onClick={()=>setFridgeTab(t)} style={{flex:1,padding:"10px 6px",background:fridgeTab===t?"#4CAF50":"#fff",color:fridgeTab===t?"#fff":"#333",border:"none",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:"bold"}}>
+            {t==="冷蔵室"?"🥛":t==="野菜室"?"🥬":"❄️"} {t} <span style={{fontSize:11,opacity:0.85}}>({counts[t]})</span>
+          </button>)}
+        </div>
+        {renderSortBar("冷蔵庫_"+fridgeTab)}
+        {sorted.length===0&&<div style={{textAlign:"center",color:"#999",padding:24}}>データなし</div>}
+        <DraggableList items={sorted} keyFn={i=>i.id} onReorder={ni=>reorderByLoc(fridgeTab,ni)} renderItem={i=><ItemCard item={i} onEdit={setEditItem} onDelete={deleteItem} onQtyChange={changeQty} onAddToShop={addToShop}/>}/>
+      </div>);
+    }
+
+    if(currentTab==="備蓄"){
+      const{sortKey:sk,sortDir:sd}=getSortState("備蓄");const sorted=applySortItems(byLoc("備蓄"),sk,sd);
+      return(<div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <h4 style={{margin:0,color:"#2e7d32"}}>備蓄品 ({byLoc("備蓄").length}件)</h4>
+          <SortControl sortKey={sk} sortDir={sd} onChange={(k,d)=>setSortState("備蓄",k,d)}/>
+        </div>
+        {sorted.length===0&&<div style={{textAlign:"center",color:"#999",padding:24}}>備蓄品なし</div>}
+        <DraggableList items={sorted} keyFn={i=>i.id} onReorder={ni=>reorderByLoc("備蓄",ni)} renderItem={i=><ItemCard item={i} onEdit={setEditItem} onDelete={deleteItem} onQtyChange={changeQty} onAddToShop={addToShop}/>}/>
+      </div>);
+    }
+
+    if(currentTab==="賞味期限"){
+      const{sortKey:sk,sortDir:sd}=getSortState("賞味期限");const sorted=sk==="none"?expiryItems:applySortItems(expiryItems,sk,sd);
+      return(<div>
+        {renderSortBar("賞味期限")}
+        <div style={{background:"#fff3e0",borderRadius:12,padding:12,marginBottom:12,fontSize:13,color:"#e65100"}}>⚠️ 期限切れ・5日以内に期限が来るもの</div>
+        {sorted.length===0&&<div style={{textAlign:"center",color:"#999",padding:24}}>期限が近いものはありません 👍</div>}
+        {sorted.map(i=><ItemCard key={i.id} item={i} onEdit={setEditItem} onDelete={deleteItem} onQtyChange={changeQty} onAddToShop={addToShop} hideDrag={true}/>)}
+      </div>);
+    }
+
+    if(currentTab==="買い物")return(
+      <div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <h4 style={{margin:0,color:"#2e7d32"}}>🛒 買い物</h4>
+          {syncIndicator&&<span style={{fontSize:11,color:"#4CAF50",fontWeight:"bold"}}>🔄 更新しました</span>}
+        </div>
+        <DraggableList items={shopList} keyFn={s=>s.id} onReorder={updateShopList} renderItem={s=>{
+          const sBtn={width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0,fontSize:16,fontWeight:"bold"};
+          return(<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,background:"#fff",borderRadius:10,padding:"8px 10px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #eee"}}>
+            <span style={{cursor:"grab",color:"#ccc",flexShrink:0,display:"flex",alignItems:"center"}}><DragHandle/></span>
+            <input type="checkbox" checked={s.done} onChange={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,done:!i.done}:i))} style={{width:20,height:20,cursor:"pointer",flexShrink:0}}/>
+            <input value={s.name} onFocus={()=>{isEditingShop.current=true;}} onBlur={()=>{isEditingShop.current=false;}} onChange={e=>{const v=e.target.value;updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,name:v}:i));}} placeholder="商品名を入力..." style={{...iSt,flex:1,textDecoration:s.done?"line-through":"none",color:s.done?"#aaa":"#333",padding:"7px 10px"}}/>
+            <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:Math.max(1,(i.qty||1)-1)}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>－</button>
+            <span style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:14,color:s.done?"#aaa":"#222",flexShrink:0}}>{s.qty||1}</span>
+            <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:(i.qty||1)+1}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>＋</button>
+            <button onClick={()=>updateShopList(shopListRef.current.filter(i=>i.id!==s.id))} style={{...sBtn,background:"#ffebee",color:"#c62828"}}><TrashIcon/></button>
+          </div>);}}/>
+        <button onClick={()=>updateShopList([...shopListRef.current,{id:genId(),name:"",qty:1,done:false}])} style={{width:"100%",padding:"12px",background:"#e8f5e9",border:"2px dashed #4CAF50",borderRadius:8,cursor:"pointer",color:"#2e7d32",fontWeight:"bold",marginTop:4,fontSize:14}}>＋ 追加</button>
+        {shopList.some(s=>s.done)&&<>
+          <button onClick={handleDeleteDone} style={{width:"100%",padding:"10px",background:"#ffebee",border:"none",borderRadius:8,cursor:"pointer",color:"#c62828",marginTop:8,fontWeight:"bold",fontSize:14}}>完了済みを削除</button>
+          <div style={{fontSize:11,color:"#aaa",textAlign:"center",marginTop:4}}>完了済みを削除を押すと☑している買い物が在庫リストに反映されます</div>
+        </>}
+      </div>
+    );
+
+    // カスタムタブ
+    const{sortKey:sk,sortDir:sd}=getSortState(currentTab);
+    const locItems=applySortItems(byLoc(currentTab),sk,sd);
+    return(
+      <div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <h4 style={{margin:0,color:"#2e7d32"}}>{currentTab} ({byLoc(currentTab).length}件)</h4>
+          <SortControl sortKey={sk} sortDir={sd} onChange={(k,d)=>setSortState(currentTab,k,d)}/>
+        </div>
+        {locItems.length===0&&<div style={{textAlign:"center",color:"#999",padding:24}}>データなし<br/><span style={{fontSize:12}}>「＋ 追加」から保存場所「{currentTab}」を選んで登録できます</span></div>}
+        <DraggableList items={locItems} keyFn={i=>i.id} onReorder={ni=>reorderByLoc(currentTab,ni)} renderItem={i=><ItemCard item={i} onEdit={setEditItem} onDelete={deleteItem} onQtyChange={changeQty} onAddToShop={addToShop}/>}/>
+      </div>
+    );
+  };
+
+  const shopCount=shopList.filter(s=>!s.done&&s.name).length;
+  const goHome=()=>{setShowForm(false);setEditItem(null);setShowSettings(false);setShowBarcode(false);setShowReceipt(false);};
+
+  // ★ 子タブの表示ロジック
+  const curChildren=tabChildren[tab]||[];
+  // curSubTab: "" = 親タブ自身, それ以外 = 子タブ名
+  const curSubTab=subTab[tab]!==undefined?subTab[tab]:(curChildren.length>0?"":"");
+  // activeTab: 子タブ選択中ならその子タブ、""なら親タブ自身
+  const activeTab=(()=>{
+    if(curChildren.length===0)return tab;
+    const s=subTab[tab];
+    if(s&&curChildren.includes(s))return s;
+    return tab;// "" or 未設定 → 親タブ自身
+  })();
+
+  // サブタブドラッグ
+  const subDrag=useRef(null);const[subDragOver,setSubDragOver]=useState(null);
+  const handleSubDragEnd=(parentTab)=>{
+    if(subDrag.current!==null&&subDragOver!==null&&subDrag.current!==subDragOver){
+      const arr=[...(tabChildren[parentTab]||[])];
+      const[item]=arr.splice(subDrag.current,1);
+      arr.splice(subDragOver,0,item);
+      saveTabChildren(parentTab,arr);
+    }
+    subDrag.current=null;setSubDragOver(null);
+  };
+
+  return(<div style={{maxWidth:480,margin:"0 auto",background:"#f0f7f0",minHeight:"100vh",fontFamily:"'Hiragino Sans','Meiryo',sans-serif"}}>
+    <div style={{background:"linear-gradient(135deg,#2e7d32,#4CAF50)",padding:"12px 14px 0",color:"#fff"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+        <h2 style={{margin:0,fontSize:16,whiteSpace:"nowrap",letterSpacing:"-0.3px"}}>🏠 食料品管理</h2>
+        <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0}}>
+          <button onClick={()=>setShowForm(true)} style={{...bSm,background:"#fff",color:"#2e7d32",padding:"8px 10px",whiteSpace:"nowrap"}}>＋ 追加</button>
+          <ReadingMenuButton onBarcode={()=>setShowBarcode(true)} onReceipt={()=>setShowReceipt(true)}/>
+          <button onClick={()=>setShowSettings(true)} style={{...bSm,background:"rgba(255,255,255,0.2)",color:"#fff",padding:"8px 10px",whiteSpace:"nowrap"}}>⚙️ 設定</button>
+        </div>
+      </div>
+      {/* ★ トップレベルタブ（ドラッグ移動可） */}
+      <div style={{display:"flex",gap:1,overflowX:"auto"}}>
+        {visibleTabs.map(t=>{
+          const oi=tabOrder.indexOf(t);let label=t;
+          if(t==="賞味期限"&&expiryItems.length>0)label=t+" ("+expiryItems.length+")";
+          if(t==="買い物"&&shopCount>0)label=t+" ("+shopCount+")";
+          if(t==="メモ"&&unreadMemoCount>0)label=t+" ("+unreadMemoCount+")";
+          return(<div key={t}
+            draggable
+            onDragStart={()=>{tabDrag.current=oi;}}
+            onDragEnter={()=>setTabDragOver(oi)}
+            onDragEnd={handleTabDragEnd}
+            onDragOver={e=>e.preventDefault()}
+            onClick={()=>setTab(t)}
+            style={{padding:"8px 9px",background:tab===t?"#fff":(tabDragOver===oi&&tabDrag.current!==oi?"rgba(255,255,255,0.3)":"transparent"),color:tab===t?"#2e7d32":"rgba(255,255,255,0.85)",borderRadius:"8px 8px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",transition:"background .15s"}}>{label}</div>);
+        })}
+      </div>
+      {/* ★ 子タブバー: 親タブ自身 + 子タブ（どちらもドラッグ可） */}
+      {curChildren.length>0&&<div style={{background:"rgba(0,0,0,0.15)",display:"flex",gap:1,overflowX:"auto",padding:"4px 0 0"}}>
+        {/* 親タブ自身 */}
+        <div
+          onClick={()=>setSubTab(prev=>({...prev,[tab]:""}))}
+          style={{padding:"6px 10px",background:activeTab===tab?"rgba(255,255,255,0.9)":"transparent",color:activeTab===tab?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none"}}>
+          {tab}
+        </div>
+        {/* 子タブ（ドラッグ可） */}
+        {curChildren.map((c,ci)=>(
+          <div key={c}
+            draggable
+            onDragStart={e=>{e.stopPropagation();subDrag.current=ci;}}
+            onDragEnter={e=>{e.stopPropagation();setSubDragOver(ci);}}
+            onDragEnd={e=>{e.stopPropagation();handleSubDragEnd(tab);}}
+            onDragOver={e=>{e.preventDefault();e.stopPropagation();}}
+            onClick={()=>setSubTab(prev=>({...prev,[tab]:c}))}
+            style={{padding:"6px 10px",background:activeTab===c?"rgba(255,255,255,0.9)":"transparent",color:activeTab===c?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",opacity:subDragOver===ci&&subDrag.current!==ci?0.5:1,transition:"opacity .15s"}}>
+            {c}
+          </div>
+        ))}
+      </div>}
+    </div>
+    <div style={{padding:12}}>
+      {loading&&<div style={{textAlign:"center",padding:32,color:"#888"}}>🔄 データを読み込み中...</div>}
+      {!loading&&<>
+        {activeTab!=="買い物"&&activeTab!=="メモ"&&<div style={{marginBottom:12}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 検索..." style={iSt}/></div>}
+        {renderTabContent(activeTab)}
+      </>}
+    </div>
+    {showForm&&<ItemForm onSave={addItems} onCancel={()=>{setShowForm(false);setBarcodePrefill(null);}} prefill={barcodePrefill} defaultLocation={getDefaultLocation()} extraLocations={customTabs} expiryRules={expiryRules} onGoHome={goHome} onAddToShop={handleAddToShopFromForm}/>}
+    {editItem&&<ItemForm initial={editItem} onSave={saveEdit} onCancel={()=>setEditItem(null)} extraLocations={customTabs} expiryRules={expiryRules} onGoHome={goHome} onAddToShop={handleAddToShopFromForm}/>}
+    {showReceipt&&<ReceiptModal onClose={()=>setShowReceipt(false)} onAdd={addItems}/>}
+    {showBarcode&&<BarcodeModal onClose={()=>setShowBarcode(false)} onFound={r=>{setBarcodePrefill(r);setShowBarcode(false);setShowForm(true);}}/>}
+    {showSettings&&<SettingsModal tabOrder={tabOrder} hiddenTabs={hiddenTabs} onSaveHiddenTabs={saveHiddenTabs} onClose={()=>{setShowSettings(false);if(hiddenTabs.includes(tab))setTab(visibleTabs[0]||DEFAULT_TABS[0]);}} onRenameTab={n=>{updateTabOrder(n);if(!n.includes(tab))setTab(n[0]);}} onExport={exportCSV} onImportClick={()=>fileRef.current.click()} onAddTab={addTab} onRemoveTab={removeTab} expiryRules={expiryRules} onSaveExpiryRules={saveExpiryRules} updateLogs={updateLogsState} onSaveUpdateLogs={saveUpdateLogsFS} tabChildren={tabChildren} onSaveTabChildren={saveTabChildren}/>}
+    {qtyModal&&<QtyAddModal item={qtyModal.item} onUpdateDate={handleQtyUpdateDate} onNewEntry={handleQtyNewEntry} onCancel={()=>setQtyModal(null)}/>}
+    {qtyZeroModal&&<QtyZeroModal itemName={qtyZeroModal.itemName} onYes={()=>{addToShop(qtyZeroModal.itemName,true);setQtyZeroModal(null);}} onNo={()=>setQtyZeroModal(null)}/>}
+    {showReflect&&<ShopReflectModal doneItems={pendingDone} onOverwrite={doReflectOverwrite} onOverwriteNew={doReflectOverwriteNew} onNewAll={doReflectNew} onCancel={doReflectCancel}/>}
+    <input ref={fileRef} type="file" accept=".csv" onChange={handleCSVImport} style={{display:"none"}}/>
+  </div>);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
