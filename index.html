@@ -56,7 +56,7 @@ const CATEGORY_DETAILS={
   "その他":["豆腐","納豆","油揚げ","こんにゃく","しらたき","ナッツ","はちみつ","ジャム","パン粉","片栗粉","小麦粉","ごま"]
 };
 const CATEGORIES=Object.keys(CATEGORY_DETAILS);
-const VERSION="ver1.29";
+const VERSION="ver1.30";
 const genId=()=>Math.random().toString(36).slice(2,9);
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const nowTs=()=>new Date().toISOString();
@@ -265,12 +265,16 @@ function ShopReflectModal({doneItems,onOverwrite,onOverwriteNew,onNewAll,onCance
   );
 }
 
-// ★ ItemForm: isNew prop追加、購入日は新規のみ
+// ★ ItemForm: 新規・編集どちらも購入日フォーム表示。「未設定=今日」文言・動作なし
 function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocation,expiryRules,onGoHome,onAddToShop}){
-  const isNew=!initial;
   const allLoc=[...LOCATIONS,...(extraLocations||[]).filter(l=>!LOCATIONS.includes(l)&&!SHOP_NAMES.includes(l))];
   const initForm=()=>{
-    if(initial){const loc=SHOP_NAMES.includes(initial.location)?"冷蔵室":initial.location;return{...initial,location:loc,purchaseDate:""};}
+    if(initial){
+      const loc=SHOP_NAMES.includes(initial.location)?"冷蔵室":initial.location;
+      // 編集時: 既存の購入日をYYYY-MM-DDで初期表示
+      const purchaseDate=tsToDate(initial.createdAt)||"";
+      return{...initial,location:loc,purchaseDate};
+    }
     const defLoc=(prefill&&prefill.location&&!SHOP_NAMES.includes(prefill.location))?prefill.location:(defaultLocation||"冷蔵室");
     return{name:(prefill&&prefill.name)||"",detail:"",category:(prefill&&prefill.category)||"",qty:1,location:defLoc,expiry:(prefill&&prefill.expiry)||"",note:"",yomi:"",purchaseDate:""};
   };
@@ -309,17 +313,17 @@ function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocatio
           <div style={{display:"flex",gap:8,alignItems:"center"}}><input value={form.expiry} readOnly placeholder="タップして選択" onClick={()=>setShowCal(true)} style={{...iSt,cursor:"pointer",flex:1}}/>{form.expiry&&<button onClick={clearExpiry} style={{...bSm,background:"#ffebee",color:"#c62828",fontSize:14,padding:"8px 10px"}}>✕</button>}</div>
           {expiryManuallyCleared&&<div style={{fontSize:11,color:"#e65100",marginTop:4}}>※ 賞味期限なしで保存します</div>}
         </div>
-        {/* ★ 購入日: 新規のみ表示 */}
-        {isNew&&<div style={{marginBottom:14}}>
+        {/* ★ 購入日: 新規・編集どちらも表示。プレースホルダーから「未設定=今日」を削除 */}
+        <div style={{marginBottom:14}}>
           <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
             <label style={{fontSize:13,color:"#666",whiteSpace:"nowrap"}}>購入日</label>
             <span style={{fontSize:11,color:"#aaa"}}>変更する場合に設定してください</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <input value={form.purchaseDate||""} readOnly placeholder="未設定=今日" onClick={()=>setShowPurchaseCal(true)} style={{...iSt,cursor:"pointer",flex:1,fontSize:13}}/>
+            <input value={form.purchaseDate||""} readOnly placeholder="タップして選択" onClick={()=>setShowPurchaseCal(true)} style={{...iSt,cursor:"pointer",flex:1,fontSize:13}}/>
             {form.purchaseDate&&<button onClick={()=>set("purchaseDate","")} style={{...bSm,background:"#ffebee",color:"#c62828",fontSize:14,padding:"8px 10px"}}>✕</button>}
           </div>
-        </div>}
+        </div>
         <div style={{marginBottom:14}}><label style={{fontSize:13,color:"#666"}}>メモ</label><input value={form.note} onChange={e=>set("note",e.target.value)} style={iSt}/></div>
         <div style={{marginBottom:14}}>
           <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
@@ -634,17 +638,6 @@ function App(){
   const customTabs=tabOrder.filter(t=>!DEFAULT_TABS.includes(t));
 
   // ★ 現在アクティブな実際のタブ（親タブが選ばれていれば子タブの選択を反映）
-  const getActiveTab=()=>{
-    const children=tabChildren[tab]||[];
-    if(children.length>0){
-      const cur=subTab[tab];
-      if(cur&&children.includes(cur))return cur;
-      return tab;// 親タブ自身を表示
-    }
-    return tab;
-  };
-  const activeTab=getActiveTab();
-
   const getDefaultLocation=()=>{
     const at=activeTab;
     if(at==="冷蔵庫")return fridgeTab;
@@ -756,7 +749,8 @@ function App(){
   const saveEdit=async(arr)=>{
     const main=arr[0];const{id,_expiryCleared,purchaseDate,...data}=main;
     if(!_expiryCleared&&!data.expiry){const ae=getAutoExpiry(data.name);if(ae)data.expiry=ae;}
-    if(!data.createdAt)data.createdAt=nowTs();
+    // ★ 購入日が設定されていれば上書き、空なら既存を維持
+    if(purchaseDate){data.createdAt=buildCreatedAt(purchaseDate);}else if(!data.createdAt){data.createdAt=nowTs();}
     await fsSet("items",id,data);
     setItems(prev=>prev.map(i=>i.id===id?{...data,id}:i));
     for(const extra of arr.slice(1)){
@@ -1033,12 +1027,17 @@ function App(){
 
   // ★ 子タブの表示ロジック
   const curChildren=tabChildren[tab]||[];
-  const curSubTab=subTab[tab]||(curChildren.length>0?curChildren[0]:"");
+  const curSubTab=subTab[tab]!==undefined?subTab[tab]:"";
+  // 表示するタブ: 子タブ選択中ならその子タブ、それ以外は親タブ自身
+  const activeTab=(curChildren.length>0&&curSubTab&&curChildren.includes(curSubTab))?curSubTab:tab;
+
   // サブタブドラッグ
   const subDrag=useRef(null);const[subDragOver,setSubDragOver]=useState(null);
   const handleSubDragEnd=(parentTab)=>{
     if(subDrag.current!==null&&subDragOver!==null&&subDrag.current!==subDragOver){
-      const arr=[...tabChildren[parentTab]];const[item]=arr.splice(subDrag.current,1);arr.splice(subDragOver,0,item);
+      const arr=[...(tabChildren[parentTab]||[])];
+      const[item]=arr.splice(subDrag.current,1);
+      arr.splice(subDragOver,0,item);
       saveTabChildren(parentTab,arr);
     }
     subDrag.current=null;setSubDragOver(null);
@@ -1071,22 +1070,24 @@ function App(){
             style={{padding:"8px 9px",background:tab===t?"#fff":(tabDragOver===oi&&tabDrag.current!==oi?"rgba(255,255,255,0.3)":"transparent"),color:tab===t?"#2e7d32":"rgba(255,255,255,0.85)",borderRadius:"8px 8px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",transition:"background .15s"}}>{label}</div>);
         })}
       </div>
-      {/* ★ 子タブバー（ドラッグ移動可） */}
+      {/* ★ 子タブバー: 親タブ自身 + 子タブ（どちらもドラッグ可） */}
       {curChildren.length>0&&<div style={{background:"rgba(0,0,0,0.15)",display:"flex",gap:1,overflowX:"auto",padding:"4px 0 0"}}>
-        {/* 親タブ自身も最初に表示 */}
-        <div onClick={()=>setSubTab(prev=>({...prev,[tab]:""}))}
-          style={{padding:"6px 10px",background:curSubTab===""?"rgba(255,255,255,0.9)":"transparent",color:curSubTab===""?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none"}}>
+        {/* 親タブ自身 */}
+        <div
+          onClick={()=>setSubTab(prev=>({...prev,[tab]:""}))}
+          style={{padding:"6px 10px",background:activeTab===tab?"rgba(255,255,255,0.9)":"transparent",color:activeTab===tab?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none"}}>
           {tab}
         </div>
+        {/* 子タブ（ドラッグ可） */}
         {curChildren.map((c,ci)=>(
           <div key={c}
             draggable
-            onDragStart={()=>{subDrag.current=ci;}}
-            onDragEnter={()=>setSubDragOver(ci)}
-            onDragEnd={()=>handleSubDragEnd(tab)}
-            onDragOver={e=>e.preventDefault()}
+            onDragStart={e=>{e.stopPropagation();subDrag.current=ci;}}
+            onDragEnter={e=>{e.stopPropagation();setSubDragOver(ci);}}
+            onDragEnd={e=>{e.stopPropagation();handleSubDragEnd(tab);}}
+            onDragOver={e=>{e.preventDefault();e.stopPropagation();}}
             onClick={()=>setSubTab(prev=>({...prev,[tab]:c}))}
-            style={{padding:"6px 10px",background:curSubTab===c?"rgba(255,255,255,0.9)":"transparent",color:curSubTab===c?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",opacity:subDragOver===ci&&subDrag.current!==ci?0.5:1,transition:"opacity .15s"}}>
+            style={{padding:"6px 10px",background:activeTab===c?"rgba(255,255,255,0.9)":"transparent",color:activeTab===c?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",opacity:subDragOver===ci&&subDrag.current!==ci?0.5:1,transition:"opacity .15s"}}>
             {c}
           </div>
         ))}
