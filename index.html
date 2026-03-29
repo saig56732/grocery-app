@@ -271,6 +271,7 @@ function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocatio
   const initForm=()=>{
     if(initial){
       const loc=SHOP_NAMES.includes(initial.location)?"冷蔵室":initial.location;
+      // 編集時: 既存の購入日をYYYY-MM-DDで初期表示
       const purchaseDate=tsToDate(initial.createdAt)||"";
       return{...initial,location:loc,purchaseDate};
     }
@@ -292,26 +293,11 @@ function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocatio
   const detOpts=form.category?(CATEGORY_DETAILS[form.category]||[]):[];
   const handleSave=()=>{if(!form.name||!form.name.trim()){alert("商品名を入力してください");return;}onSave([{...form,id:form.id||genId(),_expiryCleared:expiryManuallyCleared}]);};
   const iconBtn={width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0};
-  const[form,setForm]=useState(initForm);
-  const[showCal,setShowCal]=useState(false);
-  const[showPurchaseCal,setShowPurchaseCal]=useState(false);
-  const[autoMsg,setAutoMsg]=useState("");
-  const[expiryManuallyCleared,setExpiryManuallyCleared]=useState(false);
-  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
-  const showYomiWarn=hasKanji(form.name)&&!(form.yomi||"").trim();
-  const applyAE=(name)=>{if(!name){setAutoMsg("");return null;}const res=autoExpiry(name,expiryRules||[]);if(res){setAutoMsg("「"+res.ruleName+"」ルールと一致しました。");return res.expiry;}setAutoMsg("");return null;};
-  const clearExpiry=()=>{set("expiry","");setAutoMsg("");setExpiryManuallyCleared(true);};
-  const onCatChange=(cat)=>{setExpiryManuallyCleared(false);const ae=applyAE(cat||"");setForm(f=>({...f,category:cat,name:cat||"",detail:"",expiry:ae||""}));};
-  const onDetailChange=(val)=>{setExpiryManuallyCleared(false);const newName=val||form.category||"";const ae=applyAE(newName);setForm(f=>({...f,detail:val,name:newName,expiry:ae!=null?ae:f.expiry}));};
-  const onNameChange=(v)=>{setExpiryManuallyCleared(false);const ae=applyAE(v);setForm(f=>({...f,name:v,expiry:ae!=null?ae:f.expiry}));};
-  const detOpts=form.category?(CATEGORY_DETAILS[form.category]||[]):[];
-  const handleSave=()=>{if(!form.name||!form.name.trim()){alert("商品名を入力してください");return;}onSave([{...form,id:form.id||genId(),_expiryCleared:expiryManuallyCleared}]);};
-  const iconBtn={width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0};
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{background:"#fff",borderRadius:16,padding:24,width:340,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <h3 style={{margin:0,color:"#2e7d32"}}>{isNew?"新規登録":"編集"}</h3>
+          <h3 style={{margin:0,color:"#2e7d32"}}>{!initial?"新規登録":"編集"}</h3>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <button onClick={()=>{if(!form.name)return;if(onAddToShop)onAddToShop(form.name);}} title="買い物に追加" style={{...iconBtn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button>
             {onGoHome&&<button onClick={onGoHome} style={{...bSm,background:"#e8f5e9",color:"#2e7d32",display:"flex",alignItems:"center",gap:4,padding:"8px 12px"}}><HomeIcon/> ホーム</button>}
@@ -641,7 +627,7 @@ function App(){
   const tabChildrenRef=useRef({});
 
   // ★ 子タブになっているタブはトップレベルには表示しない
-  const allChildTabs=Object.values(tabChildren).flat();
+  const allChildTabs=Object.values(tabChildren||{}).flat();
   const visibleTabs=tabOrder.filter(t=>!hiddenTabs.includes(t)&&!allChildTabs.includes(t));
 
   const getSortState=(t)=>sortStates[t]||{sortKey:"none",sortDir:"asc"};
