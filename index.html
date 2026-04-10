@@ -30,14 +30,19 @@ const fsGetDoc=async(col,id)=>{const r=await fetch(BASE_URL+"/"+col+"/"+id,{head
 const fsSetDoc=async(col,id,data)=>{await fetch(BASE_URL+"/"+col+"/"+id,{method:"PATCH",headers:hdr,body:JSON.stringify(toFS(data))});};
 
 const LOCATIONS=["冷蔵室","野菜室","冷凍庫","備蓄"];
-const DEFAULT_TABS=["メモ","在庫一覧","冷蔵庫","備蓄","賞味期限","買い物"];
-const SHOP_NAMES=["買い物","買い物リスト"];
+// ★ DEFAULT_TABSは「買い物リスト」で統一
+const DEFAULT_TABS=["メモ","在庫一覧","冷蔵庫","備蓄","賞味期限","買い物リスト"];
+const SHOP_NAMES=["買い物リスト"];
+
+// ★ migrateTabOrder: 旧名「買い物」を「買い物リスト」へ正規化（逆方向マイグレーション）
 const migrateTabOrder=(arr)=>{
   if(!Array.isArray(arr))return[...DEFAULT_TABS];
-  const m=arr.map(t=>t==="買い物リスト"?"買い物":t);
+  // 旧データ「買い物」→「買い物リスト」に正規化
+  const m=arr.map(t=>t==="買い物"?"買い物リスト":t);
   DEFAULT_TABS.forEach(t=>{if(!m.includes(t))m.push(t);});
   return m;
 };
+
 const CATEGORY_DETAILS={
   "牛乳":["おいしい牛乳","明治おいしい牛乳","低脂肪牛乳","無調整牛乳","成分調整牛乳","有機牛乳","低温殺菌牛乳","スキムミルク","北海道牛乳","カルシウム強化牛乳","豆乳","アーモンドミルク"],
   "肉類":["鶏もも肉","鶏むね肉","鶏ひき肉","手羽元","手羽先","豚こま切れ","豚バラ肉","豚ロース肉","豚ひき肉","豚肩ロース","牛こま切れ","牛バラ肉","牛ロース肉","合いびき肉","ラム肉"],
@@ -56,7 +61,7 @@ const CATEGORY_DETAILS={
   "その他":["豆腐","納豆","油揚げ","こんにゃく","しらたき","ナッツ","はちみつ","ジャム","パン粉","片栗粉","小麦粉","ごま"]
 };
 const CATEGORIES=Object.keys(CATEGORY_DETAILS);
-const VERSION="ver1.31";
+const VERSION="ver1.32";
 const genId=()=>Math.random().toString(36).slice(2,9);
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const nowTs=()=>new Date().toISOString();
@@ -83,7 +88,6 @@ const iSt={width:"100%",padding:"10px 12px",border:"1px solid #ddd",borderRadius
 const bSm={padding:"8px 11px",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:"bold",lineHeight:1};
 const cardBorderColor=(exp)=>isExpired(exp)?"#b71c1c":withinDays(exp)?"#f44336":"#4CAF50";
 
-// ★ NumberInput: 小数点入力で値を置き換え
 function NumberInput({value,onChange,min=0,max=999,label}){
   const isDecimal=typeof value==="number"&&!Number.isInteger(value);
   const[free,setFree]=useState(()=>isDecimal||value>30);
@@ -115,7 +119,6 @@ function NumberInput({value,onChange,min=0,max=999,label}){
           }
         </div>
         <div style={{flex:1}}>
-          {/* ★ 小数点入力: 値を置き換え */}
           <select value="" onChange={e=>{
             const dec=parseFloat(e.target.value);if(isNaN(dec))return;
             onChange(dec);setStrVal(String(dec));if(!free)setFree(true);
@@ -226,12 +229,16 @@ function QtyAddModal({item,onUpdateDate,onNewEntry,onCancel}){
   );
 }
 
-function QtyZeroModal({itemName,onYes,onNo}){
+// ★ QtyZeroModal: メッセージに「元のデータは削除されます」を明記
+function QtyZeroModal({item,onYes,onNo}){
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2150,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{background:"#fff",borderRadius:16,padding:24,width:320,boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
         <h4 style={{margin:"0 0 10px",color:"#e65100",fontSize:15}}>個数が0になりました</h4>
-        <div style={{fontSize:14,color:"#555",marginBottom:20}}>「{itemName}」を買い物に追加しますか？</div>
+        <div style={{fontSize:14,color:"#555",marginBottom:8}}>「{item.name}」を買い物リストに追加しますか？</div>
+        <div style={{fontSize:12,color:"#888",marginBottom:20,background:"#fff3e0",borderRadius:8,padding:"8px 10px",lineHeight:1.6}}>
+          ⚠️ 「はい」を押すと買い物リストに追加され、元のデータは削除されます。
+        </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={onYes} style={{flex:1,padding:"12px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>はい</button>
           <button onClick={onNo} style={{flex:1,padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:15}}>いいえ</button>
@@ -241,37 +248,26 @@ function QtyZeroModal({itemName,onYes,onNo}){
   );
 }
 
-function ShopReflectModal({doneItems,onOverwrite,onOverwriteNew,onNewAll,onCancel}){
-  const[page,setPage]=useState("top");
+// ★ ShopReflectModal: 「全て新規で登録」と「キャンセル（反映せず削除）」のみに簡略化
+function ShopReflectModal({doneItems,onNewAll,onCancel}){
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2200,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{background:"#fff",borderRadius:16,padding:24,width:340,maxHeight:"85vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,0.2)"}}>
-        <h4 style={{margin:"0 0 10px",color:"#2e7d32"}}>🛒 完了済みを在庫に反映</h4>
+        <h4 style={{margin:"0 0 10px",color:"#2e7d32"}}>🛒 在庫に反映</h4>
         <div style={{background:"#f5f5f5",borderRadius:8,padding:10,marginBottom:10,fontSize:13,color:"#555"}}>{doneItems.filter(s=>s.name).map(s=><div key={s.id} style={{padding:"2px 0"}}>・{s.name} × {s.qty||1}</div>)}</div>
-        {page==="top"&&<>
-          <div style={{background:"#fff8e1",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12,color:"#795548",lineHeight:1.6}}>⚠️ 登録場所が複数・冷蔵室以外・新規の場合は<b>冷蔵室</b>に登録されます。</div>
-          <button onClick={()=>setPage("overwrite")} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,textAlign:"left",fontSize:14}}>✅ 以前の登録場所で上書き<div style={{fontSize:12,fontWeight:"normal",marginTop:3,opacity:0.85}}>同名1件・賞味期限なしは個数加算。それ以外は冷蔵室に新規追加</div></button>
-          <button onClick={onNewAll} style={{width:"100%",padding:"13px",background:"#1976d2",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,textAlign:"left",fontSize:14}}>➕ 全て新規で登録（冷蔵室）</button>
-          <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル（反映せず削除）</button>
-        </>}
-        {page==="overwrite"&&<>
-          <div style={{fontSize:14,color:"#333",marginBottom:14,fontWeight:"bold"}}>在庫があるものは購入日を更新しますか？</div>
-          <button onClick={onOverwrite} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を更新して個数を増やす</button>
-          <button onClick={onOverwriteNew} style={{width:"100%",padding:"13px",background:"#1976d2",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,fontSize:14,textAlign:"left"}}>購入日を別にして登録する</button>
-          <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル（反映せず削除）</button>
-        </>}
+        <div style={{background:"#fff8e1",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:12,color:"#795548",lineHeight:1.6}}>⚠️ 全て<b>冷蔵室</b>に新規登録されます。</div>
+        <button onClick={onNewAll} style={{width:"100%",padding:"13px",background:"#4CAF50",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",marginBottom:8,textAlign:"left",fontSize:14}}>➕ 全て新規で登録</button>
+        <button onClick={onCancel} style={{width:"100%",padding:"12px",background:"#eee",border:"none",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14}}>キャンセル（反映せず削除）</button>
       </div>
     </div>
   );
 }
 
-// ★ ItemForm: 新規・編集どちらも購入日フォーム表示。「未設定=今日」文言・動作なし
 function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocation,expiryRules,onGoHome,onAddToShop}){
   const allLoc=[...LOCATIONS,...(extraLocations||[]).filter(l=>!LOCATIONS.includes(l)&&!SHOP_NAMES.includes(l))];
   const initForm=()=>{
     if(initial){
       const loc=SHOP_NAMES.includes(initial.location)?"冷蔵室":initial.location;
-      // 編集時: 既存の購入日をYYYY-MM-DDで初期表示
       const purchaseDate=tsToDate(initial.createdAt)||"";
       return{...initial,location:loc,purchaseDate};
     }
@@ -299,7 +295,7 @@ function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocatio
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
           <h3 style={{margin:0,color:"#2e7d32"}}>{!initial?"新規登録":"編集"}</h3>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <button onClick={()=>{if(!form.name)return;if(onAddToShop)onAddToShop(form.name);}} title="買い物に追加" style={{...iconBtn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button>
+            <button onClick={()=>{if(!form.name)return;if(onAddToShop)onAddToShop(form.name);}} title="買い物リストに追加" style={{...iconBtn,background:"#fff8e1",color:"#f57f17"}}><CartIcon/></button>
             {onGoHome&&<button onClick={onGoHome} style={{...bSm,background:"#e8f5e9",color:"#2e7d32",display:"flex",alignItems:"center",gap:4,padding:"8px 12px"}}><HomeIcon/> ホーム</button>}
           </div>
         </div>
@@ -313,7 +309,6 @@ function ItemForm({initial,onSave,onCancel,prefill,extraLocations,defaultLocatio
           <div style={{display:"flex",gap:8,alignItems:"center"}}><input value={form.expiry} readOnly placeholder="タップして選択" onClick={()=>setShowCal(true)} style={{...iSt,cursor:"pointer",flex:1}}/>{form.expiry&&<button onClick={clearExpiry} style={{...bSm,background:"#ffebee",color:"#c62828",fontSize:14,padding:"8px 10px"}}>✕</button>}</div>
           {expiryManuallyCleared&&<div style={{fontSize:11,color:"#e65100",marginTop:4}}>※ 賞味期限なしで保存します</div>}
         </div>
-        {/* ★ 購入日: 新規・編集どちらも表示。プレースホルダーから「未設定=今日」を削除 */}
         <div style={{marginBottom:14}}>
           <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
             <label style={{fontSize:13,color:"#666",whiteSpace:"nowrap"}}>購入日</label>
@@ -446,11 +441,9 @@ function TabVisibilityPage({tabOrder,hiddenTabs,onSave,onBack}){
   </div>);
 }
 
-// ★ タブ結合ページ
 function TabMergePage({tabOrder,tabChildren,onSave,onBack}){
   const[parent,setParent]=useState(tabOrder[0]||"");
   const[children,setChildren]=useState([]);
-  // 既存の結合を読み込む
   useEffect(()=>{setChildren(tabChildren[parent]||[]);},[parent,tabChildren]);
   const addChild=(c)=>{if(!c||children.includes(c)||c===parent||children.length>=10)return;setChildren(prev=>[...prev,c]);};
   const removeChild=(c)=>setChildren(prev=>prev.filter(x=>x!==c));
@@ -594,9 +587,8 @@ function App(){
   const[loading,setLoading]=useState(true);
   const[tabOrder,setTabOrder]=useState([...DEFAULT_TABS]);
   const[tab,setTab]=useState("メモ");
-  // ★ tabChildren: {親タブ名: [子タブ名...]}
   const[tabChildren,setTabChildren]=useState({});
-  const[subTab,setSubTab]=useState({});// {親タブ名: 現在選択中の子タブ}
+  const[subTab,setSubTab]=useState({});
   const[fridgeTab,setFridgeTab]=useState("冷蔵室");
   const[showForm,setShowForm]=useState(false);
   const[editItem,setEditItem]=useState(null);
@@ -633,11 +625,9 @@ function App(){
   const getSortState=(t)=>sortStates[t]||{sortKey:"none",sortDir:"asc"};
   const setSortState=(t,k,d)=>setSortStates(prev=>({...prev,[t]:{sortKey:k,sortDir:d}}));
   const fileRef=useRef();
-  // ★ タブドラッグ: トップレベルタブ用
   const tabDrag=useRef(null);const[tabDragOver,setTabDragOver]=useState(null);
   const customTabs=tabOrder.filter(t=>!DEFAULT_TABS.includes(t));
 
-  // ★ 現在アクティブな実際のタブ（親タブが選ばれていれば子タブの選択を反映）
   const getDefaultLocation=()=>{
     const at=activeTab;
     if(at==="冷蔵庫")return fridgeTab;
@@ -669,9 +659,22 @@ function App(){
       if(s){
         if(s.tabOrderJson){try{const raw=JSON.parse(s.tabOrderJson);const t=migrateTabOrder(raw);setTabOrder(t);tabOrderRef.current=t;}catch{}}
         if(s.shopListJson){try{const sl=JSON.parse(s.shopListJson);if(Array.isArray(sl)){setShopList(sl);shopListRef.current=sl;}}catch{}}
-        if(s.hiddenTabsJson){try{const h=JSON.parse(s.hiddenTabsJson);if(Array.isArray(h)){const hm=h.map(x=>x==="買い物リスト"?"買い物":x);setHiddenTabs(hm);hiddenTabsRef.current=hm;}}catch{}}
+        // ★ hiddenTabs: 旧「買い物」→「買い物リスト」に正規化
+        if(s.hiddenTabsJson){try{const h=JSON.parse(s.hiddenTabsJson);if(Array.isArray(h)){const hm=h.map(x=>x==="買い物"?"買い物リスト":x);setHiddenTabs(hm);hiddenTabsRef.current=hm;}}catch{}}
         if(s.expiryRulesJson){try{const r=JSON.parse(s.expiryRulesJson);if(Array.isArray(r)&&r.length>0){setExpiryRules(r);expiryRulesRef.current=r;}}catch{}}
-        if(s.tabChildrenJson){try{const tc=JSON.parse(s.tabChildrenJson);if(tc&&typeof tc==="object"){setTabChildren(tc);tabChildrenRef.current=tc;}}catch{}}
+        // ★ tabChildren: 旧「買い物」→「買い物リスト」に正規化
+        if(s.tabChildrenJson){try{
+          const tcRaw=JSON.parse(s.tabChildrenJson);
+          if(tcRaw&&typeof tcRaw==="object"){
+            const tcNorm={};
+            for(const[k,v]of Object.entries(tcRaw)){
+              const nk=k==="買い物"?"買い物リスト":k;
+              const nv=Array.isArray(v)?v.map(c=>c==="買い物"?"買い物リスト":c):v;
+              tcNorm[nk]=nv;
+            }
+            setTabChildren(tcNorm);tabChildrenRef.current=tcNorm;
+          }
+        }catch{}}
         if(s.memoLastSeen)setMemoLastSeen(s.memoLastSeen);
       }
     }catch(e){console.error(e);}
@@ -696,7 +699,6 @@ function App(){
   const saveHiddenTabs=useCallback((arr)=>{hiddenTabsRef.current=arr;setHiddenTabs(arr);if(settingsReady.current)saveMainSettings({hiddenTabs:arr});},[saveMainSettings]);
   const saveExpiryRules=useCallback((rules)=>{expiryRulesRef.current=rules;setExpiryRules(rules);if(settingsReady.current)saveMainSettings({expiryRules:rules});},[saveMainSettings]);
 
-  // ★ タブ結合保存
   const saveTabChildren=useCallback((parent,children)=>{
     const newTc={...tabChildrenRef.current,[parent]:children};
     tabChildrenRef.current=newTc;setTabChildren(newTc);
@@ -717,7 +719,6 @@ function App(){
 
   const unreadMemoCount=memos.filter(m=>m.ts&&memoLastSeen&&m.ts>memoLastSeen).length;
 
-  // ★ タブドラッグ: トップレベル
   const handleTabDragEnd=()=>{
     if(tabDrag.current!==null&&tabDragOver!==null&&tabDrag.current!==tabDragOver){
       const arr=[...tabOrder];const[item]=arr.splice(tabDrag.current,1);arr.splice(tabDragOver,0,item);updateTabOrder(arr);
@@ -749,7 +750,6 @@ function App(){
   const saveEdit=async(arr)=>{
     const main=arr[0];const{id,_expiryCleared,purchaseDate,...data}=main;
     if(!_expiryCleared&&!data.expiry){const ae=getAutoExpiry(data.name);if(ae)data.expiry=ae;}
-    // ★ 購入日が設定されていれば上書き、空なら既存を維持
     if(purchaseDate){data.createdAt=buildCreatedAt(purchaseDate);}else if(!data.createdAt){data.createdAt=nowTs();}
     await fsSet("items",id,data);
     setItems(prev=>prev.map(i=>i.id===id?{...data,id}:i));
@@ -767,10 +767,10 @@ function App(){
 
   const addToShop=useCallback((itemOrName,silent=false)=>{
     const name=typeof itemOrName==="string"?itemOrName:itemOrName.name;
-    if(shopListRef.current.some(s=>s.name===name)){if(!silent)alert("「"+name+"」はすでに買い物にあります");return;}
+    if(shopListRef.current.some(s=>s.name===name)){if(!silent)alert("「"+name+"」はすでに買い物リストにあります");return;}
     const newList=[...shopListRef.current,{id:genId(),name,qty:1,done:false}];
     updateShopList(newList);
-    if(!silent&&typeof itemOrName!=="string")alert("「"+name+"」を買い物に追加しました");
+    if(!silent&&typeof itemOrName!=="string")alert("「"+name+"」を買い物リストに追加しました");
   },[updateShopList]);
 
   useEffect(()=>{window._addToShopExternal=name=>{if(!shopListRef.current.some(s=>s.name===name)){updateShopList([...shopListRef.current,{id:genId(),name,qty:1,done:false}]);}};},[updateShopList]);
@@ -784,7 +784,7 @@ function App(){
     if(newExpiry!==item.expiry)patch.expiry=newExpiry;
     setItems(prev=>prev.map(i=>i.id===item.id?{...i,...patch,expiry:newExpiry}:i));
     await fsSet("items",item.id,patch).catch(e=>console.error(e));
-    if(newQty===0&&item.qty>0)setQtyZeroModal({itemName:item.name});
+    if(newQty===0&&item.qty>0)setQtyZeroModal({item});
   };
 
   const changeQty=async(id,delta)=>{
@@ -807,24 +807,7 @@ function App(){
     setPendingDone(done);setShowReflect(true);
   };
 
-  const doReflectOverwrite=async()=>{
-    setShowReflect(false);const ci=[...items];
-    for(const s of pendingDone){
-      const bq=s.qty||1;const ae=getAutoExpiry(s.name);const m=ci.filter(i=>i.name===s.name);
-      if(m.length===1&&!m[0].expiry){const patch={qty:Math.round((m[0].qty+bq)*10)/10,createdAt:nowTs()};if(ae)patch.expiry=ae;try{await fsSet("items",m[0].id,patch);setItems(prev=>prev.map(i=>i.id===m[0].id?{...i,...patch}:i));}catch(e){console.error(e);}}
-      else{const data={name:s.name,detail:"",category:m[0]?m[0].category||"":"",qty:bq,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}}
-    }
-    updateShopList(shopListRef.current.filter(s=>!s.done));
-  };
-  const doReflectOverwriteNew=async()=>{
-    setShowReflect(false);const ci=[...items];
-    for(const s of pendingDone){
-      const bq=s.qty||1;const ae=getAutoExpiry(s.name);const m=ci.filter(i=>i.name===s.name);
-      if(m.length===1&&m[0].qty===0){const patch={qty:bq,createdAt:nowTs()};if(ae)patch.expiry=ae;try{await fsSet("items",m[0].id,patch);setItems(prev=>prev.map(i=>i.id===m[0].id?{...i,...patch}:i));}catch(e){console.error(e);}}
-      else{const loc=m.length===1?m[0].location:"冷蔵室";const data={name:s.name,detail:"",category:m[0]?m[0].category||"":"",qty:bq,location:loc,expiry:ae||"",note:"",createdAt:nowTs()};try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}}
-    }
-    updateShopList(shopListRef.current.filter(s=>!s.done));
-  };
+  // ★ doReflectNew のみ残す（モーダルのボタンを2つに簡略化したため）
   const doReflectNew=async()=>{
     setShowReflect(false);
     for(const s of pendingDone){
@@ -888,12 +871,29 @@ function App(){
 
   const handleAddToShopFromForm=(name)=>{
     if(!name)return;
-    if(shopListRef.current.some(s=>s.name===name)){alert("「"+name+"」はすでに買い物にあります");return;}
+    if(shopListRef.current.some(s=>s.name===name)){alert("「"+name+"」はすでに買い物リストにあります");return;}
     updateShopList([...shopListRef.current,{id:genId(),name,qty:1,done:false}]);
-    alert("「"+name+"」を買い物に追加しました");
+    alert("「"+name+"」を買い物リストに追加しました");
   };
 
-  // ★ タブコンテンツのレンダリング（activeTabを使用）
+  // ★ 子タブの表示ロジック
+  const curChildren=tabChildren[tab]||[];
+  const curSubTab=subTab[tab]!==undefined?subTab[tab]:"";
+  const activeTab=(curChildren.length>0&&curSubTab&&curChildren.includes(curSubTab))?curSubTab:tab;
+
+  // サブタブドラッグ
+  const subDrag=useRef(null);const[subDragOver,setSubDragOver]=useState(null);
+  const handleSubDragEnd=(parentTab)=>{
+    if(subDrag.current!==null&&subDragOver!==null&&subDrag.current!==subDragOver){
+      const arr=[...(tabChildren[parentTab]||[])];
+      const[item]=arr.splice(subDrag.current,1);
+      arr.splice(subDragOver,0,item);
+      saveTabChildren(parentTab,arr);
+    }
+    subDrag.current=null;setSubDragOver(null);
+  };
+
+  // ★ renderTabContent: 「買い物」→「買い物リスト」に修正
   const renderTabContent=(currentTab)=>{
     if(currentTab==="メモ")return<MemoTab memos={memos} onAdd={addMemo} onEdit={editMemo} onDelete={deleteMemo} onReorder={setMemos}/>;
 
@@ -982,10 +982,11 @@ function App(){
       </div>);
     }
 
-    if(currentTab==="買い物")return(
+    // ★ 「買い物リスト」タブのコンテンツ（旧「買い物」→「買い物リスト」に修正）
+    if(currentTab==="買い物リスト")return(
       <div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-          <h4 style={{margin:0,color:"#2e7d32"}}>🛒 買い物</h4>
+          <h4 style={{margin:0,color:"#2e7d32"}}>🛒 買い物リスト</h4>
           {syncIndicator&&<span style={{fontSize:11,color:"#4CAF50",fontWeight:"bold"}}>🔄 更新しました</span>}
         </div>
         <DraggableList items={shopList} keyFn={s=>s.id} onReorder={updateShopList} renderItem={s=>{
@@ -1002,7 +1003,7 @@ function App(){
         <button onClick={()=>updateShopList([...shopListRef.current,{id:genId(),name:"",qty:1,done:false}])} style={{width:"100%",padding:"12px",background:"#e8f5e9",border:"2px dashed #4CAF50",borderRadius:8,cursor:"pointer",color:"#2e7d32",fontWeight:"bold",marginTop:4,fontSize:14}}>＋ 追加</button>
         {shopList.some(s=>s.done)&&<>
           <button onClick={handleDeleteDone} style={{width:"100%",padding:"10px",background:"#ffebee",border:"none",borderRadius:8,cursor:"pointer",color:"#c62828",marginTop:8,fontWeight:"bold",fontSize:14}}>完了済みを削除</button>
-          <div style={{fontSize:11,color:"#aaa",textAlign:"center",marginTop:4}}>完了済みを削除を押すと☑している買い物が在庫リストに反映されます</div>
+          <div style={{fontSize:11,color:"#aaa",textAlign:"center",marginTop:4}}>完了済みを削除を押すとチェックしているアイテムが在庫リストに反映されます</div>
         </>}
       </div>
     );
@@ -1022,26 +1023,9 @@ function App(){
     );
   };
 
+  // ★ shopCountは「買い物リスト」タブ用カウント（タブ名は既に「買い物リスト」なので変更不要）
   const shopCount=shopList.filter(s=>!s.done&&s.name).length;
   const goHome=()=>{setShowForm(false);setEditItem(null);setShowSettings(false);setShowBarcode(false);setShowReceipt(false);};
-
-  // ★ 子タブの表示ロジック
-  const curChildren=tabChildren[tab]||[];
-  const curSubTab=subTab[tab]!==undefined?subTab[tab]:"";
-  // 表示するタブ: 子タブ選択中ならその子タブ、それ以外は親タブ自身
-  const activeTab=(curChildren.length>0&&curSubTab&&curChildren.includes(curSubTab))?curSubTab:tab;
-
-  // サブタブドラッグ
-  const subDrag=useRef(null);const[subDragOver,setSubDragOver]=useState(null);
-  const handleSubDragEnd=(parentTab)=>{
-    if(subDrag.current!==null&&subDragOver!==null&&subDrag.current!==subDragOver){
-      const arr=[...(tabChildren[parentTab]||[])];
-      const[item]=arr.splice(subDrag.current,1);
-      arr.splice(subDragOver,0,item);
-      saveTabChildren(parentTab,arr);
-    }
-    subDrag.current=null;setSubDragOver(null);
-  };
 
   return(<div style={{maxWidth:480,margin:"0 auto",background:"#f0f7f0",minHeight:"100vh",fontFamily:"'Hiragino Sans','Meiryo',sans-serif"}}>
     <div style={{background:"linear-gradient(135deg,#2e7d32,#4CAF50)",padding:"12px 14px 0",color:"#fff"}}>
@@ -1053,12 +1037,13 @@ function App(){
           <button onClick={()=>setShowSettings(true)} style={{...bSm,background:"rgba(255,255,255,0.2)",color:"#fff",padding:"8px 10px",whiteSpace:"nowrap"}}>⚙️ 設定</button>
         </div>
       </div>
-      {/* ★ トップレベルタブ（ドラッグ移動可） */}
+      {/* ★ トップレベルタブ */}
       <div style={{display:"flex",gap:1,overflowX:"auto"}}>
         {visibleTabs.map(t=>{
           const oi=tabOrder.indexOf(t);let label=t;
           if(t==="賞味期限"&&expiryItems.length>0)label=t+" ("+expiryItems.length+")";
-          if(t==="買い物"&&shopCount>0)label=t+" ("+shopCount+")";
+          // ★ タブ名「買い物リスト」でカウント表示
+          if(t==="買い物リスト"&&shopCount>0)label=t+" ("+shopCount+")";
           if(t==="メモ"&&unreadMemoCount>0)label=t+" ("+unreadMemoCount+")";
           return(<div key={t}
             draggable
@@ -1070,15 +1055,13 @@ function App(){
             style={{padding:"8px 9px",background:tab===t?"#fff":(tabDragOver===oi&&tabDrag.current!==oi?"rgba(255,255,255,0.3)":"transparent"),color:tab===t?"#2e7d32":"rgba(255,255,255,0.85)",borderRadius:"8px 8px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none",transition:"background .15s"}}>{label}</div>);
         })}
       </div>
-      {/* ★ 子タブバー: 親タブ自身 + 子タブ（どちらもドラッグ可） */}
+      {/* ★ 子タブバー */}
       {curChildren.length>0&&<div style={{background:"rgba(0,0,0,0.15)",display:"flex",gap:1,overflowX:"auto",padding:"4px 0 0"}}>
-        {/* 親タブ自身 */}
         <div
           onClick={()=>setSubTab(prev=>({...prev,[tab]:""}))}
           style={{padding:"6px 10px",background:activeTab===tab?"rgba(255,255,255,0.9)":"transparent",color:activeTab===tab?"#2e7d32":"rgba(255,255,255,0.8)",borderRadius:"6px 6px 0 0",cursor:"pointer",fontSize:11,fontWeight:"bold",whiteSpace:"nowrap",userSelect:"none"}}>
           {tab}
         </div>
-        {/* 子タブ（ドラッグ可） */}
         {curChildren.map((c,ci)=>(
           <div key={c}
             draggable
@@ -1096,7 +1079,7 @@ function App(){
     <div style={{padding:12}}>
       {loading&&<div style={{textAlign:"center",padding:32,color:"#888"}}>🔄 データを読み込み中...</div>}
       {!loading&&<>
-        {activeTab!=="買い物"&&activeTab!=="メモ"&&<div style={{marginBottom:12}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 検索..." style={iSt}/></div>}
+        {activeTab!=="買い物リスト"&&activeTab!=="メモ"&&<div style={{marginBottom:12}}><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 検索..." style={iSt}/></div>}
         {renderTabContent(activeTab)}
       </>}
     </div>
@@ -1106,8 +1089,8 @@ function App(){
     {showBarcode&&<BarcodeModal onClose={()=>setShowBarcode(false)} onFound={r=>{setBarcodePrefill(r);setShowBarcode(false);setShowForm(true);}}/>}
     {showSettings&&<SettingsModal tabOrder={tabOrder} hiddenTabs={hiddenTabs} onSaveHiddenTabs={saveHiddenTabs} onClose={()=>{setShowSettings(false);if(hiddenTabs.includes(tab))setTab(visibleTabs[0]||DEFAULT_TABS[0]);}} onRenameTab={n=>{updateTabOrder(n);if(!n.includes(tab))setTab(n[0]);}} onExport={exportCSV} onImportClick={()=>fileRef.current.click()} onAddTab={addTab} onRemoveTab={removeTab} expiryRules={expiryRules} onSaveExpiryRules={saveExpiryRules} updateLogs={updateLogsState} onSaveUpdateLogs={saveUpdateLogsFS} tabChildren={tabChildren} onSaveTabChildren={saveTabChildren}/>}
     {qtyModal&&<QtyAddModal item={qtyModal.item} onUpdateDate={handleQtyUpdateDate} onNewEntry={handleQtyNewEntry} onCancel={()=>setQtyModal(null)}/>}
-    {qtyZeroModal&&<QtyZeroModal itemName={qtyZeroModal.itemName} onYes={()=>{addToShop(qtyZeroModal.itemName,true);setQtyZeroModal(null);}} onNo={()=>setQtyZeroModal(null)}/>}
-    {showReflect&&<ShopReflectModal doneItems={pendingDone} onOverwrite={doReflectOverwrite} onOverwriteNew={doReflectOverwriteNew} onNewAll={doReflectNew} onCancel={doReflectCancel}/>}
+    {qtyZeroModal&&<QtyZeroModal item={qtyZeroModal.item} onYes={async()=>{addToShop(qtyZeroModal.item,true);await fsDel("items",qtyZeroModal.item.id);setItems(prev=>prev.filter(i=>i.id!==qtyZeroModal.item.id));setQtyZeroModal(null);}} onNo={()=>setQtyZeroModal(null)}/>}
+    {showReflect&&<ShopReflectModal doneItems={pendingDone} onNewAll={doReflectNew} onCancel={doReflectCancel}/>}
     <input ref={fileRef} type="file" accept=".csv" onChange={handleCSVImport} style={{display:"none"}}/>
   </div>);
 }
