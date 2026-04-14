@@ -61,7 +61,7 @@ const CATEGORY_DETAILS={
   "その他":["豆腐","納豆","油揚げ","こんにゃく","しらたき","ナッツ","はちみつ","ジャム","パン粉","片栗粉","小麦粉","ごま"]
 };
 const CATEGORIES=Object.keys(CATEGORY_DETAILS);
-const VERSION="ver1.32";
+const VERSION="ver1.33";
 const genId=()=>Math.random().toString(36).slice(2,9);
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const nowTs=()=>new Date().toISOString();
@@ -622,7 +622,8 @@ function App(){
   const allChildTabs=Object.values(tabChildren||{}).flat();
   const visibleTabs=tabOrder.filter(t=>!hiddenTabs.includes(t)&&!allChildTabs.includes(t));
 
-  const getSortState=(t)=>sortStates[t]||{sortKey:"none",sortDir:"asc"};
+  // ★ デフォルトソート: 賞味期限タブ以外は「あいうえお順（昇順）」
+  const getSortState=(t)=>sortStates[t]||(t==="賞味期限"?{sortKey:"none",sortDir:"asc"}:{sortKey:"name",sortDir:"asc"});
   const setSortState=(t,k,d)=>setSortStates(prev=>({...prev,[t]:{sortKey:k,sortDir:d}}));
   const fileRef=useRef();
   const tabDrag=useRef(null);const[tabDragOver,setTabDragOver]=useState(null);
@@ -807,14 +808,18 @@ function App(){
     setPendingDone(done);setShowReflect(true);
   };
 
-  // ★ doReflectNew のみ残す（モーダルのボタンを2つに簡略化したため）
+  // ★ doReflectNew: Promise.allSettledで並列実行し、失敗したものを報告。ステートは一括更新。
   const doReflectNew=async()=>{
     setShowReflect(false);
-    for(const s of pendingDone){
+    const toAdd=pendingDone.map(s=>{
       const ae=getAutoExpiry(s.name);
-      const data={name:s.name,detail:"",category:"",qty:s.qty||1,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};
-      try{const added=await fsAdd("items",data);setItems(prev=>[...prev,{...data,id:added.id}]);}catch(e){console.error(e);}
-    }
+      return{name:s.name,detail:"",category:"",qty:s.qty||1,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};
+    });
+    const results=await Promise.allSettled(toAdd.map(data=>fsAdd("items",data).then(added=>({...data,id:added.id}))));
+    const succeeded=results.filter(r=>r.status==="fulfilled").map(r=>r.value);
+    const failedCount=results.filter(r=>r.status==="rejected").length;
+    if(succeeded.length>0)setItems(prev=>[...prev,...succeeded]);
+    if(failedCount>0)alert(failedCount+"件の登録に失敗しました。再度お試しください。");
     updateShopList(shopListRef.current.filter(s=>!s.done));
   };
   const doReflectCancel=()=>{setShowReflect(false);updateShopList(shopListRef.current.filter(s=>!s.done));};
