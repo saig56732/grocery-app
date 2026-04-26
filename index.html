@@ -23,7 +23,7 @@ const toFS=(obj)=>{const fields={};for(const[k,v]of Object.entries(obj)){if(v===
 const fromFS=(doc)=>{const id=doc.name.split("/").pop();const obj={id};for(const[k,v]of Object.entries(doc.fields||{})){if(v.stringValue!==undefined)obj[k]=v.stringValue;else if(v.integerValue!==undefined)obj[k]=Number(v.integerValue);else if(v.doubleValue!==undefined)obj[k]=Number(v.doubleValue);else if(v.booleanValue!==undefined)obj[k]=v.booleanValue;else obj[k]=null;}return obj;};
 const hdr={"Content-Type":"application/json"};
 const fsGet=async(col)=>{const r=await fetch(BASE_URL+"/"+col,{headers:hdr});const d=await r.json();return(d.documents||[]).map(fromFS);};
-const fsAdd=async(col,data)=>{const r=await fetch(BASE_URL+"/"+col,{method:"POST",headers:hdr,body:JSON.stringify(toFS(data))});return fromFS(await r.json());};
+const fsAdd=async(col,data)=>{const r=await fetch(BASE_URL+"/"+col,{method:"POST",headers:hdr,body:JSON.stringify(toFS(data))});if(!r.ok){const errText=await r.text().catch(()=>"");throw new Error("Firestore POST failed: "+r.status+" "+errText);}return fromFS(await r.json());};
 const fsSet=async(col,id,data)=>{const mask=Object.keys(data).map(k=>"updateMask.fieldPaths="+encodeURIComponent(k)).join("&");await fetch(BASE_URL+"/"+col+"/"+id+"?"+mask,{method:"PATCH",headers:hdr,body:JSON.stringify(toFS(data))});};
 const fsDel=async(col,id)=>{await fetch(BASE_URL+"/"+col+"/"+id,{method:"DELETE",headers:hdr});};
 const fsGetDoc=async(col,id)=>{const r=await fetch(BASE_URL+"/"+col+"/"+id,{headers:hdr});if(!r.ok)return null;const d=await r.json();return d.fields?fromFS(d):null;};
@@ -61,7 +61,7 @@ const CATEGORY_DETAILS={
   "その他":["豆腐","納豆","油揚げ","こんにゃく","しらたき","ナッツ","はちみつ","ジャム","パン粉","片栗粉","小麦粉","ごま"]
 };
 const CATEGORIES=Object.keys(CATEGORY_DETAILS);
-const VERSION="ver1.33";
+const VERSION="ver1.34";
 const genId=()=>Math.random().toString(36).slice(2,9);
 const todayStr=()=>new Date().toISOString().slice(0,10);
 const nowTs=()=>new Date().toISOString();
@@ -808,18 +808,31 @@ function App(){
     setPendingDone(done);setShowReflect(true);
   };
 
-  // ★ doReflectNew: Promise.allSettledで並列実行し、失敗したものを報告。ステートは一括更新。
+  // ★ doReflectNew: 順次実行+リトライで確実に全件登録（並列実行はFirestoreレート制限で漏れる原因）
   const doReflectNew=async()=>{
     setShowReflect(false);
-    const toAdd=pendingDone.map(s=>{
+    const toAdd=pendingDone.filter(s=>s.name).map(s=>{
       const ae=getAutoExpiry(s.name);
       return{name:s.name,detail:"",category:"",qty:s.qty||1,location:"冷蔵室",expiry:ae||"",note:"",createdAt:nowTs()};
     });
-    const results=await Promise.allSettled(toAdd.map(data=>fsAdd("items",data).then(added=>({...data,id:added.id}))));
-    const succeeded=results.filter(r=>r.status==="fulfilled").map(r=>r.value);
-    const failedCount=results.filter(r=>r.status==="rejected").length;
+    const succeeded=[];
+    const failed=[];
+    for(let i=0;i<toAdd.length;i++){
+      const data=toAdd[i];
+      let ok=false;
+      for(let retry=0;retry<3;retry++){
+        try{
+          const added=await fsAdd("items",data);
+          if(added&&added.id){succeeded.push({...data,id:added.id});ok=true;break;}
+        }catch(e){console.error("登録リトライ",retry,data.name,e);}
+        await new Promise(r=>setTimeout(r,300*(retry+1)));
+      }
+      if(!ok)failed.push(data.name);
+      if(i<toAdd.length-1)await new Promise(r=>setTimeout(r,80));
+    }
     if(succeeded.length>0)setItems(prev=>[...prev,...succeeded]);
-    if(failedCount>0)alert(failedCount+"件の登録に失敗しました。再度お試しください。");
+    if(failed.length>0)alert("以下の"+failed.length+"件の登録に失敗しました:\n"+failed.join("、")+"\n\n再度お試しください。");
+    else if(succeeded.length>0)alert(succeeded.length+"件を在庫に登録しました。");
     updateShopList(shopListRef.current.filter(s=>!s.done));
   };
   const doReflectCancel=()=>{setShowReflect(false);updateShopList(shopListRef.current.filter(s=>!s.done));};
@@ -996,14 +1009,20 @@ function App(){
         </div>
         <DraggableList items={shopList} keyFn={s=>s.id} onReorder={updateShopList} renderItem={s=>{
           const sBtn={width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",border:"none",borderRadius:8,cursor:"pointer",flexShrink:0,fontSize:16,fontWeight:"bold"};
-          return(<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,background:"#fff",borderRadius:10,padding:"8px 10px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #eee"}}>
-            <span style={{cursor:"grab",color:"#ccc",flexShrink:0,display:"flex",alignItems:"center"}}><DragHandle/></span>
-            <input type="checkbox" checked={s.done} onChange={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,done:!i.done}:i))} style={{width:20,height:20,cursor:"pointer",flexShrink:0}}/>
-            <input value={s.name} onFocus={()=>{isEditingShop.current=true;}} onBlur={()=>{isEditingShop.current=false;}} onChange={e=>{const v=e.target.value;updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,name:v}:i));}} placeholder="商品名を入力..." style={{...iSt,flex:1,textDecoration:s.done?"line-through":"none",color:s.done?"#aaa":"#333",padding:"7px 10px"}}/>
-            <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:Math.max(1,(i.qty||1)-1)}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>－</button>
-            <span style={{width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:14,color:s.done?"#aaa":"#222",flexShrink:0}}>{s.qty||1}</span>
-            <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:(i.qty||1)+1}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>＋</button>
-            <button onClick={()=>updateShopList(shopListRef.current.filter(i=>i.id!==s.id))} style={{...sBtn,background:"#ffebee",color:"#c62828"}}><TrashIcon/></button>
+          const nameLen=(s.name||"").length;
+          const nameFontSize=nameLen>12?11:nameLen>8?12:13;
+          return(<div style={{display:"flex",gap:6,alignItems:"flex-start",marginBottom:8,background:"#fff",borderRadius:10,padding:"8px 10px",boxShadow:"0 1px 4px rgba(0,0,0,0.07)",border:"1px solid #eee"}}>
+            <span style={{cursor:"grab",color:"#ccc",flexShrink:0,display:"flex",alignItems:"center",paddingTop:8}}><DragHandle/></span>
+            <input type="checkbox" checked={s.done} onChange={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,done:!i.done}:i))} style={{width:20,height:20,cursor:"pointer",flexShrink:0,marginTop:8}}/>
+            <div style={{flex:1,minWidth:0}}>
+              <input value={s.name} onFocus={()=>{isEditingShop.current=true;}} onBlur={()=>{isEditingShop.current=false;}} onChange={e=>{const v=e.target.value;updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,name:v}:i));}} placeholder="商品名を入力..." style={{...iSt,width:"100%",textDecoration:s.done?"line-through":"none",color:s.done?"#aaa":"#333",padding:"7px 10px",fontSize:nameFontSize}}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,paddingTop:4}}>
+              <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:Math.max(1,(i.qty||1)-1)}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>－</button>
+              <span style={{width:28,height:36,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"bold",fontSize:14,color:s.done?"#aaa":"#222",flexShrink:0}}>{s.qty||1}</span>
+              <button onClick={()=>updateShopList(shopListRef.current.map(i=>i.id===s.id?{...i,qty:(i.qty||1)+1}:i))} style={{...sBtn,background:"#f5f5f5",color:"#666"}}>＋</button>
+              <button onClick={()=>updateShopList(shopListRef.current.filter(i=>i.id!==s.id))} style={{...sBtn,background:"#ffebee",color:"#c62828"}}><TrashIcon/></button>
+            </div>
           </div>);}}/>
         <button onClick={()=>updateShopList([...shopListRef.current,{id:genId(),name:"",qty:1,done:false}])} style={{width:"100%",padding:"12px",background:"#e8f5e9",border:"2px dashed #4CAF50",borderRadius:8,cursor:"pointer",color:"#2e7d32",fontWeight:"bold",marginTop:4,fontSize:14}}>＋ 追加</button>
         {shopList.some(s=>s.done)&&<>
